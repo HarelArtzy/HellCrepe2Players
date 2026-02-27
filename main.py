@@ -38,6 +38,9 @@ class Player:
 
         self.image = self.frames[0]
 
+        self.hp = 3
+        self.max_hp = 3
+
         self.vx = 0.0
         self.vy = 0.0
         self.on_ground = False
@@ -130,7 +133,7 @@ class Enemy:
         self.vy = 0.0
         self.on_ground = False
 
-        self.hp = 3
+        self.hp = 1
 
         # Shooting system
         self.shoot_timer = 0.0
@@ -238,12 +241,39 @@ def shoot(projectiles: list, player: Player):
     projectiles.append(Projectile(sx, sy, vx, vy))
 
 
+def display_text(window, screen, msg, color, base_w, base_h, scale, font_name="Arial", font_size=24):
+    font = pygame.font.SysFont(font_name, font_size)
+    # Split into lines (pygame font.render doesn't handle \n automatically)
+    lines = msg.splitlines() if "\n" in msg else [msg]
+
+    # Render all lines
+    rendered = [font.render(line, True, color) for line in lines]
+    line_h = font.get_linesize()
+
+    total_h = len(rendered) * line_h
+    start_y = (base_h - total_h) // 2
+
+    for i, surf in enumerate(rendered):
+        rect = surf.get_rect()
+        rect.centerx = base_w // 2
+        rect.y = start_y + i * line_h
+        screen.blit(surf, rect)
+
+    # Present (scale base->window)
+    scaled = pygame.transform.scale(screen, (base_w * scale, base_h * scale))
+    window.blit(scaled, (0, 0))
+    pygame.display.flip()
+
+
 def main():
     pygame.init()
     window = pygame.display.set_mode((BASE_W * SCALE, BASE_H * SCALE))
     screen = pygame.Surface((BASE_W, BASE_H))
     pygame.display.set_caption("Tiled TMX + Collision + Jump + Shoot")
     clock = pygame.time.Clock()
+
+    full_heart_img = pygame.image.load("assets/ui/full_heart.png").convert_alpha()
+    broken_heart_img = pygame.image.load("assets/ui/broken_heart.png").convert_alpha()
 
     # Load TMX
     tmx = load_pygame("assets/maps/level1.tmx")
@@ -262,7 +292,22 @@ def main():
     shoot_timer = 0.0
 
     running = True
+    dead = False
+
     while running:
+        while dead:
+            display_text(window, screen, "You Died.\nPress 'q' to quit or 'r' to restart", pygame.Color("white"), BASE_W, BASE_H, SCALE)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_r:  # Press 'P' to unpause
+                        main()
+                    if event.key == pygame.K_q:  # Press 'Q' to quit
+                        pygame.quit()
+                        sys.exit()
+
         dt = clock.tick(FPS) / 1000.0
         shoot_timer = max(0.0, shoot_timer - dt)
 
@@ -324,6 +369,10 @@ def main():
             if hit_wall:
                 continue
 
+            for e in enemies:
+                if r.colliderect(e.rect):
+                    e.hp -= 1
+
             alive.append(p)
         projectiles = alive
 
@@ -349,10 +398,13 @@ def main():
 
             # Hit player
             if r.colliderect(player.rect):
-                # TODO: player.hp -= 1
+                player.hp -= 1
                 continue  # bullet disappears on hit
 
             alive_enemy.append(p)
+
+        if player.hp <= 0:
+            dead = True
 
         enemy_projectiles = alive_enemy
 
@@ -374,6 +426,14 @@ def main():
         # Draw enemies
         for e in enemies:
             e.draw(screen)
+
+        for i in range(player.max_hp):
+            x = 8 + i * 20
+            y = 8
+            if i < player.hp:
+                screen.blit(full_heart_img, (x, y))
+            else:
+                screen.blit(broken_heart_img, (x, y))
 
         scaled = pygame.transform.scale(screen, (BASE_W * SCALE, BASE_H * SCALE))
         window.blit(scaled, (0, 0))
