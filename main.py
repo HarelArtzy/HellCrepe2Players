@@ -1,4 +1,6 @@
 import sys
+from asyncio import current_task
+
 import pygame
 from pytmx.util_pygame import load_pygame
 
@@ -13,7 +15,7 @@ JUMP_VEL = 540.0
 BULLET_SPEED = 900.0
 BULLET_TTL = 1.2
 BULLET_RADIUS = 3
-SHOOT_COOLDOWN = 0.5
+BASE_SHOOT_COOLDOWN = 0.5
 JUMP_BUFFER_TIME = 0.12
 INVINCIBILITY_TIME = 0.8
 
@@ -26,6 +28,27 @@ ENEMY_SIZE = 32
 MAX_STEP_HEIGHT = 16
 
 MODE = 0
+
+MAP_DICT = {
+    "lvl1": {
+        "map": "assets/maps/map1",
+        "start": (60, 20),
+        "end": (750, 70),
+        "chest": (646, 70),
+        "enemies": [("Pancake", (400,100))],
+        "chest_msg": "Chest:\n Increase fire rate by 25%!\n Press Space to continue",
+        "shoot_cooldown": BASE_SHOOT_COOLDOWN
+    },
+    "lvl2": {
+        "map": "assets/maps/map2",
+        "start": (20, 140),
+        "end": (380, 140),
+        "chest": (208, 80),
+        "enemies": [],
+        "shoot_cooldown": BASE_SHOOT_COOLDOWN*0.75,
+        "chest_msg": "Mysterious Statue:\n Acquired super goon ability"
+    }
+}
 
 
 class Player:
@@ -317,11 +340,13 @@ def end_menu(window, screen, clock, msg):
                 if event.key == pygame.K_q:
                     return "quit"
 
-def open_chest(window, screen, clock):
+def open_chest(window, screen, clock, level):
+    level_str = "lvl" + str(level)
+    msg = MAP_DICT[level_str]["chest_msg"]
     while True:
         display_text(
             window, screen,
-            "Chest:\n Increase fire rate by 25%!\n Press Space to continue",
+            msg,
             pygame.Color("white"),
             BASE_W, BASE_H, SCALE
         )
@@ -335,7 +360,15 @@ def open_chest(window, screen, clock):
                     return None
 
 
+def load_level(path):
+    tmx = load_pygame(path)
+    solids = build_collision_rects(tmx, "Collision")
+    return tmx, solids
+
+
 def main():
+    shoot_cooldown = BASE_SHOOT_COOLDOWN
+    current_level = 1
     pygame.init()
     window = pygame.display.set_mode((BASE_W * SCALE, BASE_H * SCALE))
     screen = pygame.Surface((BASE_W, BASE_H))
@@ -345,30 +378,38 @@ def main():
     full_heart_img = pygame.image.load("assets/ui/full_heart.png").convert_alpha()
     broken_heart_img = pygame.image.load("assets/ui/broken_heart.png").convert_alpha()
 
-    tmx = load_pygame("assets/maps/map1.tmx")
-    solids = build_collision_rects(tmx, "Collision")
+    tmx, solids = load_level("assets/maps/map1.tmx")
 
     def reset_game():
-        _player = Player(60, 20)
-        _chest_x = 646
-        _chest_y = 70
+        _current_level_str = "lvl" + str(current_level)
+        _player_x, _player_y = MAP_DICT[_current_level_str]["start"]
+        _player = Player(_player_x, _player_y)
+
+        _chest_x, _chest_y = MAP_DICT[_current_level_str]["chest"]
         _chest_rect = pygame.Rect(_chest_x, _chest_y, 16, 16)
         _chest_open = False
-        _enemies = [Pancake(400, 100)]
+
+        _enemies = []
+        for _e in MAP_DICT[_current_level_str]["enemies"]:
+            func = globals()[_e[0]](_e[1][0], _e[1][1])
+            _enemies.append(func)
+
+        _shoot_cooldown = MAP_DICT[_current_level_str]["shoot_cooldown"]
+
         _enemy_projectiles = []
         _projectiles = []
         _shoot_timer = 0.0
         _dead = False
-        return _player, _enemies, _enemy_projectiles, _projectiles, _shoot_timer, _dead, _chest_x, _chest_y, _chest_rect, _chest_open
+        return _player, _enemies, _enemy_projectiles, _projectiles, _shoot_timer, _dead, _chest_x, _chest_y, _chest_rect, _chest_open, _shoot_cooldown
 
-    player, enemies, enemy_projectiles, projectiles, shoot_timer, dead, chest_x, chest_y, chest_rect, chest_open = reset_game()
+    player, enemies, enemy_projectiles, projectiles, shoot_timer, dead, chest_x, chest_y, chest_rect, chest_open, shoot_cooldown = reset_game()
     running = True
 
     while running:
         if dead:
             action = end_menu(window, screen, clock, "You Died.\nPress 'q' to quit or 'r' to restart")
             if action == "restart":
-                player, enemies, enemy_projectiles, projectiles, shoot_timer, dead, chest_x, chest_y, chest_rect, chest_open = reset_game()
+                player, enemies, enemy_projectiles, projectiles, shoot_timer, dead, chest_x, chest_y, chest_rect, chest_open, shoot_cooldown = reset_game()
                 continue
             pygame.quit()
             sys.exit()
@@ -403,7 +444,7 @@ def main():
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if shoot_timer == 0.0:
                     shoot(projectiles, player)
-                    shoot_timer = SHOOT_COOLDOWN
+                    shoot_timer = shoot_cooldown
 
         keys = pygame.key.get_pressed()
         player.vx = 0.0
@@ -418,10 +459,24 @@ def main():
             allow_step=player.on_ground
         )
 
+#-----------------------------------------------------------------------------------------------
+
         if (not chest_open) and (player.hitbox.colliderect(
                 chest_rect) or player.hitbox.right == chest_rect.left or player.hitbox.left == chest_rect.right):
             chest_open = True
-            open_chest(window, screen, clock)
+            open_chest(window, screen, clock, current_level)
+
+        current_level_str = "lvl" + str(current_level)
+        end_x, end_y = MAP_DICT[current_level_str]["end"]
+        end_rect = pygame.Rect(end_x, end_y, 16, 16)
+        if player.hitbox.colliderect(end_rect) or player.hitbox.right == end_rect.left or player.hitbox.left == end_rect.right:
+            current_level += 1
+            map_num = "map" + str(current_level)
+            tmx, solids = load_level(f"assets/maps/{map_num}.tmx")
+            player, enemies, enemy_projectiles, projectiles, shoot_timer, dead, chest_x, chest_y, chest_rect, chest_open, shoot_cooldown = reset_game()
+
+
+# -----------------------------------------------------------------------------------------------
 
         if player.jump_buffer > 0 and player.on_ground:
             player.vy = -JUMP_VEL
