@@ -4,7 +4,13 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="31bf454b-279d-4aff-a5b6-da730738c2b1" name="Changes" comment="" />
+    <list default="true" id="31bf454b-279d-4aff-a5b6-da730738c2b1" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/assets/enemies/pancake/pancake_frame1.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/assets/player/player_frame2.png" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/assets/player/player_idle.png" beforeDir="false" afterPath="$PROJECT_DIR$/assets/player/player_frame1.png" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -20,6 +26,18 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
+  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
+  "lastFilter": {
+    "state": "OPEN",
+    "assignee": "HarelArtzy"
+  }
+}]]></component>
+  <component name="GithubPullRequestsUISettings"><![CDATA[{
+  "selectedUrlAndAccountId": {
+    "url": "https://github.com/HarelArtzy/HellCrepe.git",
+    "accountId": "2a38bbad-44ac-4156-adda-c7c54723f4d5"
+  }
+}]]></component>
   <component name="ProjectColorInfo"><![CDATA[{
   "associatedIndex": 3
 }]]></component>
@@ -34,15 +52,17 @@
     "Python.main.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "git-widget-placeholder": "master",
     "junie.onboarding.icon.badge.shown": "true",
-    "last_opened_file_path": "C:/Users/artzy/PycharmProjects/HellCrepe/assets/tileset",
+    "last_opened_file_path": "C:/Users/artzy/PycharmProjects/HellCrepe/assets/enemies/pancake",
     "to.speed.mode.migration.done": "true"
   }
 }]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
-      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\tileset" />
+      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\enemies\pancake" />
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\player" />
+      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\tileset" />
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\maps" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
