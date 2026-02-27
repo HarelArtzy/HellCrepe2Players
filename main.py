@@ -2,8 +2,7 @@ import sys
 import pygame
 from pytmx.util_pygame import load_pygame
 
-# Window matches your earlier size
-BASE_W, BASE_H = 512, 128
+BASE_W, BASE_H = 800, 160
 SCALE = 3
 FPS = 60
 
@@ -11,11 +10,12 @@ GRAVITY = 2200.0
 MOVE_SPEED = 260.0
 JUMP_VEL = 540.0
 
-# Shooting
 BULLET_SPEED = 900.0
 BULLET_TTL = 1.2
 BULLET_RADIUS = 3
 SHOOT_COOLDOWN = 0.5
+JUMP_BUFFER_TIME = 0.12
+INVINCIBILITY_TIME = 0.8
 
 ENEMY_SPEED = 120.0
 ENEMY_SHOOT_COOLDOWN = 0.9
@@ -23,19 +23,24 @@ ENEMY_BULLET_SPEED = 520.0
 ENEMY_BULLET_TTL = 2.0
 ENEMY_SIZE = 32
 
+MAX_STEP_HEIGHT = 16
+
+MODE = 0
+
+
 class Player:
     def __init__(self, x, y):
-        self.rect = pygame.Rect(x, y, 32, 32)
+        self.hitbox = pygame.Rect(x, y, 16, 22)
 
-        # Load 2 frames
+        self.sprite_w, self.sprite_h = 32, 32
+        self.sprite_offset_x = -8
+        self.sprite_offset_y = -10
+
         self.frames = [
             pygame.image.load("assets/player/player_frame1.png").convert_alpha(),
             pygame.image.load("assets/player/player_frame2.png").convert_alpha()
         ]
-
-        # Scale if needed
-        self.frames = [pygame.transform.scale(img, (32, 32)) for img in self.frames]
-
+        self.frames = [pygame.transform.scale(img, (self.sprite_w, self.sprite_h)) for img in self.frames]
         self.image = self.frames[0]
 
         self.hp = 3
@@ -45,28 +50,27 @@ class Player:
         self.vy = 0.0
         self.on_ground = False
 
-        # Animation
         self.anim_timer = 0.0
-        self.anim_speed = 0.5  # seconds per frame
+        self.anim_speed = 0.5
         self.frame_index = 0
 
-    def jump(self):
-        if self.on_ground:
-            self.vy = -JUMP_VEL
-            self.on_ground = False
+        self.jump_buffer = 0.0
+        self.hurt_timer = 0.0
+
+    @property
+    def draw_pos(self):
+        return self.hitbox.x + self.sprite_offset_x, self.hitbox.y + self.sprite_offset_y
 
     def update_animation(self, dt):
         self.anim_timer += dt
-
         if self.anim_timer >= self.anim_speed:
-            self.anim_timer = 0
+            self.anim_timer = 0.0
             self.frame_index = (self.frame_index + 1) % 2
 
-        self.image = self.frames[self.frame_index]
-
-        # Flip when moving left
+        img = self.frames[self.frame_index]
         if self.vx < 0:
-            self.image = pygame.transform.flip(self.image, True, False)
+            img = pygame.transform.flip(img, True, False)
+        self.image = img
 
 
 class Projectile:
@@ -96,36 +100,63 @@ class Projectile:
         pygame.draw.circle(screen, (255, 220, 120), (int(self.x), int(self.y)), self.radius)
 
 
-def move_and_collide(rect: pygame.Rect, vx: float, vy: float, solids: list[pygame.Rect], dt: float):
-    # Move X
-    rect.x += int(vx * dt)
-    for s in solids:
-        if rect.colliderect(s):
-            if vx > 0:
-                rect.right = s.left
-            elif vx < 0:
-                rect.left = s.right
+def move_and_collide(rect: pygame.Rect, vx: float, vy: float, solids: list[pygame.Rect], dt: float, allow_step: bool):
+    dx = int(vx * dt)
+    rect.x += dx
+
+    if dx != 0:
+        hit = None
+        for s in solids:
+            if rect.colliderect(s):
+                hit = s
+                break
+
+        if hit is not None:
+            if allow_step:
+                original_y = rect.y
+                stepped = False
+                for step in range(1, MAX_STEP_HEIGHT + 1):
+                    rect.y = original_y - step
+                    blocked = False
+                    for s2 in solids:
+                        if rect.colliderect(s2):
+                            blocked = True
+                            break
+                    if not blocked:
+                        stepped = True
+                        break
+
+                if not stepped:
+                    rect.y = original_y
+                    if dx > 0:
+                        rect.right = hit.left
+                    else:
+                        rect.left = hit.right
+            else:
+                if dx > 0:
+                    rect.right = hit.left
+                else:
+                    rect.left = hit.right
 
     on_ground = False
 
-    # Move Y
     rect.y += int(vy * dt)
     for s in solids:
         if rect.colliderect(s):
-            if vy > 0:  # falling
+            if vy > 0:
                 rect.bottom = s.top
-                vy = 0
+                vy = 0.0
                 on_ground = True
-            elif vy < 0:  # jumping
+            elif vy < 0:
                 rect.top = s.bottom
-                vy = 0
+                vy = 0.0
 
     return vy, on_ground
+
 
 class Enemy:
     def __init__(self, x, y, image_path):
         self.rect = pygame.Rect(x, y, ENEMY_SIZE, ENEMY_SIZE)
-
         self.image = pygame.image.load(image_path).convert_alpha()
         self.image = pygame.transform.scale(self.image, (ENEMY_SIZE, ENEMY_SIZE))
 
@@ -135,35 +166,29 @@ class Enemy:
 
         self.hp = 1
 
-        # Shooting system
         self.shoot_timer = 0.0
         self.shoot_cooldown = ENEMY_SHOOT_COOLDOWN
 
     def update(self, dt, player_rect, enemy_projectiles):
-        # Movement logic defined by subclass
         self.update_ai(dt, player_rect)
-
-        # Cooldown tick
         self.shoot_timer = max(0.0, self.shoot_timer - dt)
-
-        # Shooting decision defined by subclass
         self.try_shoot(player_rect, enemy_projectiles)
 
     def update_ai(self, dt, player_rect):
-        pass  # overridden in subclass
+        pass
 
     def try_shoot(self, player_rect, enemy_projectiles):
-        pass  # overridden in subclass
+        pass
 
     def draw(self, screen):
         screen.blit(self.image, self.rect)
+
 
 class Pancake(Enemy):
     def __init__(self, x, y):
         super().__init__(x, y, "assets/enemies/pancake/pancake_frame1.png")
 
     def update_ai(self, dt, player_rect):
-        # Simple horizontal chase
         if player_rect.centerx < self.rect.centerx:
             self.vx = -ENEMY_SPEED
         else:
@@ -173,7 +198,6 @@ class Pancake(Enemy):
         if self.shoot_timer > 0:
             return
 
-        # Shoot toward player
         sx, sy = self.rect.centerx, self.rect.centery
         dx = player_rect.centerx - sx
         dy = player_rect.centery - sy
@@ -187,18 +211,15 @@ class Pancake(Enemy):
         vx = dx * ENEMY_BULLET_SPEED
         vy = dy * ENEMY_BULLET_SPEED
 
-        enemy_projectiles.append(
-            Projectile(sx, sy, vx, vy, radius=3, ttl=ENEMY_BULLET_TTL)
-        )
-
+        enemy_projectiles.append(Projectile(sx, sy, vx, vy, radius=3, ttl=ENEMY_BULLET_TTL))
         self.shoot_timer = self.shoot_cooldown
 
 
 def build_collision_rects(tmx, layer_name: str):
     tile_w = tmx.tilewidth
     tile_h = tmx.tileheight
-
     layer = tmx.get_layer_by_name(layer_name)
+
     solids = []
     for x, y, gid in layer:
         if gid != 0:
@@ -207,13 +228,10 @@ def build_collision_rects(tmx, layer_name: str):
 
 
 def draw_tmx(screen, tmx):
-    # Draw in layer order as in Tiled
     for layer in tmx.visible_layers:
-        # Skip collision layer even if visible
         if getattr(layer, "name", "") == "Collision":
             continue
-
-        if hasattr(layer, "data"):  # TileLayer
+        if hasattr(layer, "data"):
             for x, y, gid in layer:
                 tile = tmx.get_tile_image_by_gid(gid)
                 if tile:
@@ -224,10 +242,11 @@ def shoot(projectiles: list, player: Player):
     mx, my = pygame.mouse.get_pos()
     mx //= SCALE
     my //= SCALE
-    sx, sy = player.rect.centerx, player.rect.centery
 
+    sx, sy = player.hitbox.centerx, player.hitbox.centery
     dx = mx - sx
     dy = my - sy
+
     length = (dx * dx + dy * dy) ** 0.5
     if length == 0:
         return
@@ -242,11 +261,10 @@ def shoot(projectiles: list, player: Player):
 
 
 def display_text(window, screen, msg, color, base_w, base_h, scale, font_name="Arial", font_size=24):
+    screen.fill((15, 15, 20))
     font = pygame.font.SysFont(font_name, font_size)
-    # Split into lines (pygame font.render doesn't handle \n automatically)
     lines = msg.splitlines() if "\n" in msg else [msg]
 
-    # Render all lines
     rendered = [font.render(line, True, color) for line in lines]
     line_h = font.get_linesize()
 
@@ -259,10 +277,62 @@ def display_text(window, screen, msg, color, base_w, base_h, scale, font_name="A
         rect.y = start_y + i * line_h
         screen.blit(surf, rect)
 
-    # Present (scale base->window)
     scaled = pygame.transform.scale(screen, (base_w * scale, base_h * scale))
     window.blit(scaled, (0, 0))
     pygame.display.flip()
+
+
+def pause_menu(window, screen, clock):
+    while True:
+        display_text(
+            window, screen,
+            "Game Paused.\nPress Space or Esc to resume.\nPress 'r' to restart.\nPress 'q' to quit",
+            pygame.Color("white"),
+            BASE_W, BASE_H, SCALE
+        )
+        clock.tick(30)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return "quit"
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r:
+                    return "restart"
+                if event.key == pygame.K_q:
+                    return "quit"
+                if event.key in (pygame.K_SPACE, pygame.K_ESCAPE):
+                    pygame.event.clear(pygame.KEYDOWN)
+                    return "resume"
+
+
+def end_menu(window, screen, clock, msg):
+    while True:
+        display_text(window, screen, msg, pygame.Color("white"), BASE_W, BASE_H, SCALE)
+        clock.tick(30)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return "quit"
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r:
+                    return "restart"
+                if event.key == pygame.K_q:
+                    return "quit"
+
+def open_chest(window, screen, clock):
+    while True:
+        display_text(
+            window, screen,
+            "Chest:\n Increase fire rate by 25%!\n Press Space to continue",
+            pygame.Color("white"),
+            BASE_W, BASE_H, SCALE
+        )
+        clock.tick(30)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return "quit"
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    pygame.event.clear(pygame.KEYDOWN)
+                    return None
 
 
 def main():
@@ -275,41 +345,42 @@ def main():
     full_heart_img = pygame.image.load("assets/ui/full_heart.png").convert_alpha()
     broken_heart_img = pygame.image.load("assets/ui/broken_heart.png").convert_alpha()
 
-    # Load TMX
-    tmx = load_pygame("assets/maps/level1.tmx")
-
-    # Build collision rects from your Collision tile layer
+    tmx = load_pygame("assets/maps/map1.tmx")
     solids = build_collision_rects(tmx, "Collision")
 
-    # Spawn player somewhere safe (top-left-ish)
-    player = Player(60, 20)
+    def reset_game():
+        _player = Player(60, 20)
+        _chest_x = 646
+        _chest_y = 70
+        _chest_rect = pygame.Rect(_chest_x, _chest_y, 16, 16)
+        _chest_open = False
+        _enemies = [Pancake(400, 100)]
+        _enemy_projectiles = []
+        _projectiles = []
+        _shoot_timer = 0.0
+        _dead = False
+        return _player, _enemies, _enemy_projectiles, _projectiles, _shoot_timer, _dead, _chest_x, _chest_y, _chest_rect, _chest_open
 
-    enemies = [Pancake(280, 20)]
-    enemy_projectiles = []
-
-    # Projectiles + cooldown
-    projectiles = []
-    shoot_timer = 0.0
-
+    player, enemies, enemy_projectiles, projectiles, shoot_timer, dead, chest_x, chest_y, chest_rect, chest_open = reset_game()
     running = True
-    dead = False
 
     while running:
-        while dead:
-            display_text(window, screen, "You Died.\nPress 'q' to quit or 'r' to restart", pygame.Color("white"), BASE_W, BASE_H, SCALE)
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_r:  # Press 'P' to unpause
-                        main()
-                    if event.key == pygame.K_q:  # Press 'Q' to quit
-                        pygame.quit()
-                        sys.exit()
+        if dead:
+            action = end_menu(window, screen, clock, "You Died.\nPress 'q' to quit or 'r' to restart")
+            if action == "restart":
+                player, enemies, enemy_projectiles, projectiles, shoot_timer, dead, chest_x, chest_y, chest_rect, chest_open = reset_game()
+                continue
+            pygame.quit()
+            sys.exit()
 
         dt = clock.tick(FPS) / 1000.0
         shoot_timer = max(0.0, shoot_timer - dt)
+
+        if player.hurt_timer > 0:
+            player.hurt_timer = max(0.0, player.hurt_timer - dt)
+
+        if player.jump_buffer > 0:
+            player.jump_buffer = max(0.0, player.jump_buffer - dt)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -317,9 +388,18 @@ def main():
 
             if event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_SPACE, pygame.K_w, pygame.K_UP):
-                    player.jump()
+                    player.jump_buffer = JUMP_BUFFER_TIME
 
-            # Left click to shoot
+                if event.key == pygame.K_ESCAPE:
+                    action = pause_menu(window, screen, clock)
+                    if action == "resume":
+                        continue
+                    if action == "restart":
+                        player, enemies, enemy_projectiles, projectiles, shoot_timer, dead, chest_x, chest_y, chest_rect, chest_open = reset_game()
+                        break
+                    pygame.quit()
+                    sys.exit()
+
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if shoot_timer == 0.0:
                     shoot(projectiles, player)
@@ -332,26 +412,44 @@ def main():
         if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
             player.vx = MOVE_SPEED
 
-        # Gravity
         player.vy += GRAVITY * dt
+        player.vy, player.on_ground = move_and_collide(
+            player.hitbox, player.vx, player.vy, solids, dt,
+            allow_step=player.on_ground
+        )
 
-        # Move + collide with tile solids
-        player.vy, player.on_ground = move_and_collide(player.rect, player.vx, player.vy, solids, dt)
+        if (not chest_open) and (player.hitbox.colliderect(
+                chest_rect) or player.hitbox.right == chest_rect.left or player.hitbox.left == chest_rect.right):
+            chest_open = True
+            open_chest(window, screen, clock)
+
+        if player.jump_buffer > 0 and player.on_ground:
+            player.vy = -JUMP_VEL
+            player.on_ground = False
+            player.jump_buffer = 0.0
 
         for e in enemies:
-            e.update(dt, player.rect, enemy_projectiles)
-
-            # Apply gravity
+            e.update(dt, player.hitbox, enemy_projectiles)
             e.vy += GRAVITY * dt
-            e.vy, e.on_ground = move_and_collide(e.rect, e.vx, e.vy, solids, dt)
+            e.vy, e.on_ground = move_and_collide(e.rect, e.vx, e.vy, solids, dt, allow_step=False)
 
         player.update_animation(dt)
 
-        # Update projectiles
+        for e in enemies:
+            if player.hurt_timer == 0 and player.hitbox.colliderect(e.rect):
+                player.hp -= 1
+                player.hurt_timer = INVINCIBILITY_TIME
+
+                if player.hitbox.centerx < e.rect.centerx:
+                    player.vx = -250
+                else:
+                    player.vx = 250
+
+                player.vy = -200
+
         for p in projectiles:
             p.update(dt)
 
-        # Remove projectiles that expire, leave screen, or hit walls
         alive = []
         for p in projectiles:
             if p.ttl <= 0:
@@ -369,12 +467,19 @@ def main():
             if hit_wall:
                 continue
 
+            hit_enemy = False
             for e in enemies:
                 if r.colliderect(e.rect):
                     e.hp -= 1
+                    hit_enemy = True
+                    break
+            if hit_enemy:
+                continue
 
             alive.append(p)
+
         projectiles = alive
+        enemies = [e for e in enemies if e.hp > 0]
 
         for p in enemy_projectiles:
             p.update(dt)
@@ -396,34 +501,28 @@ def main():
             if hit_wall:
                 continue
 
-            # Hit player
-            if r.colliderect(player.rect):
-                player.hp -= 1
-                continue  # bullet disappears on hit
+            if r.colliderect(player.hitbox):
+                if MODE != 1:
+                    player.hp -= 1
+                continue
 
             alive_enemy.append(p)
 
+        enemy_projectiles = alive_enemy
         if player.hp <= 0:
             dead = True
 
-        enemy_projectiles = alive_enemy
-
-        # Draw
         screen.fill((15, 15, 20))
         draw_tmx(screen, tmx)
 
-        # Draw bullets (behind player is fine; swap order if you want)
         for p in projectiles:
             p.draw(screen)
 
-        # Draw player
-        screen.blit(player.image, player.rect)
+        screen.blit(player.image, player.draw_pos)
 
-        # Draw enemy bullets
         for p in enemy_projectiles:
             p.draw(screen)
 
-        # Draw enemies
         for e in enemies:
             e.draw(screen)
 

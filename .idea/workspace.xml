@@ -4,9 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="31bf454b-279d-4aff-a5b6-da730738c2b1" name="Changes" comment="added pancake">
-      <change afterPath="$PROJECT_DIR$/assets/ui/broken_heart.png" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/ui/full_heart.png" afterDir="false" />
+    <list default="true" id="31bf454b-279d-4aff-a5b6-da730738c2b1" name="Changes" comment="restart/quit">
+      <change afterPath="$PROJECT_DIR$/assets/maps/map1.tmx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
     </list>
@@ -48,22 +47,23 @@
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
     "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.functions.executor": "Run",
     "Python.main.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "git-widget-placeholder": "master",
     "junie.onboarding.icon.badge.shown": "true",
-    "last_opened_file_path": "C:/Users/artzy/PycharmProjects/HellCrepe/assets/GUI",
+    "last_opened_file_path": "C:/Users/artzy/PycharmProjects/HellCrepe/assets/maps",
     "to.speed.mode.migration.done": "true"
   }
 }]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
+      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\maps" />
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\GUI" />
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\enemies\pancake" />
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\player" />
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\tileset" />
-      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\maps" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe" />
@@ -92,7 +92,15 @@
       <option name="project" value="LOCAL" />
       <updated>1772200840312</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="restart/quit">
+      <option name="closed" value="true" />
+      <created>1772204620048</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1772204620048</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -108,6 +116,7 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="added pancake" />
-    <option name="LAST_COMMIT_MESSAGE" value="added pancake" />
+    <MESSAGE value="restart/quit" />
+    <option name="LAST_COMMIT_MESSAGE" value="restart/quit" />
   </component>
 </project>
