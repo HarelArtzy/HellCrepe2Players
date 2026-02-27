@@ -1,5 +1,4 @@
 import sys
-from asyncio import current_task
 
 import pygame
 from pytmx.util_pygame import load_pygame
@@ -34,19 +33,24 @@ MAP_DICT = {
         "map": "assets/maps/map1",
         "start": (60, 20),
         "end": (750, 70),
-        "chest": (646, 70),
-        "enemies": [("Pancake", (400,100))],
-        "chest_msg": "Chest:\n Increase fire rate by 25%!\n Press Space to continue",
-        "shoot_cooldown": BASE_SHOOT_COOLDOWN
+        "chest": (646, 45),
+        "enemies": [("Pancake", (400, 100))],
+        "chest_msg": ["Chest:\n Increase fire rate by 25%!\n Press Space to continue"],
+        "chest_reward": [("shoot_cooldown", "mul", 0.75)],
+        "hearts": 3
     },
     "lvl2": {
         "map": "assets/maps/map2",
-        "start": (20, 140),
+        "start": (60, 140),
         "end": (380, 140),
-        "chest": (208, 80),
+        "chest": (208, 70),
         "enemies": [],
-        "shoot_cooldown": BASE_SHOOT_COOLDOWN*0.75,
-        "chest_msg": "Mysterious Statue:\n Acquired super goon ability"
+        "chest_msg": [
+            'Mysterious Statue:\n "You are going to need\nthis when you face\nthe devourer of crepes"\n Press Space to continue',
+            "You gained an extra heart!"
+        ],
+        "chest_reward": [("max_hp", "add", 1), ("hp", "add", 1)],
+        "hearts": 3
     }
 }
 
@@ -79,6 +83,9 @@ class Player:
 
         self.jump_buffer = 0.0
         self.hurt_timer = 0.0
+
+        self.shoot_timer = 0.0
+        self.shoot_cooldown = BASE_SHOOT_COOLDOWN
 
     @property
     def draw_pos(self):
@@ -340,24 +347,28 @@ def end_menu(window, screen, clock, msg):
                 if event.key == pygame.K_q:
                     return "quit"
 
+
 def open_chest(window, screen, clock, level):
     level_str = "lvl" + str(level)
     msg = MAP_DICT[level_str]["chest_msg"]
-    while True:
-        display_text(
-            window, screen,
-            msg,
-            pygame.Color("white"),
-            BASE_W, BASE_H, SCALE
-        )
-        clock.tick(30)
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return "quit"
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_SPACE:
-                    pygame.event.clear(pygame.KEYDOWN)
-                    return None
+    for m in msg:
+        active = True
+        while active:
+            display_text(
+                window, screen,
+                m,
+                pygame.Color("white"),
+                BASE_W, BASE_H, SCALE
+            )
+            clock.tick(30)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return "quit"
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_SPACE:
+                        pygame.event.clear(pygame.KEYDOWN)
+                        active = False
+    return None
 
 
 def load_level(path):
@@ -366,8 +377,30 @@ def load_level(path):
     return tmx, solids
 
 
+def apply_reward(player: Player, reward):
+    attr, op, val = reward
+    cur = getattr(player, attr)
+    if op == "add":
+        setattr(player, attr, cur + val)
+    elif op == "mul":
+        setattr(player, attr, cur * val)
+    elif op == "set":
+        setattr(player, attr, val)
+
+    if attr in ("max_hp", "hp"):
+        if player.max_hp < 1:
+            player.max_hp = 1
+        if player.hp > player.max_hp:
+            player.hp = player.max_hp
+        if player.hp < 0:
+            player.hp = 0
+
+    if attr == "shoot_cooldown":
+        if player.shoot_cooldown < 0.05:
+            player.shoot_cooldown = 0.05
+
+
 def main():
-    shoot_cooldown = BASE_SHOOT_COOLDOWN
     current_level = 1
     pygame.init()
     window = pygame.display.set_mode((BASE_W * SCALE, BASE_H * SCALE))
@@ -380,42 +413,50 @@ def main():
 
     tmx, solids = load_level("assets/maps/map1.tmx")
 
-    def reset_game():
-        _current_level_str = "lvl" + str(current_level)
-        _player_x, _player_y = MAP_DICT[_current_level_str]["start"]
-        _player = Player(_player_x, _player_y)
+    def reset_level(carry_player: Player | None = None):
+        level_str = "lvl" + str(current_level)
+        px, py = MAP_DICT[level_str]["start"]
+        p = Player(px, py)
 
-        _chest_x, _chest_y = MAP_DICT[_current_level_str]["chest"]
-        _chest_rect = pygame.Rect(_chest_x, _chest_y, 16, 16)
-        _chest_open = False
+        if carry_player is None:
+            base_hearts = MAP_DICT[level_str]["hearts"]
+            p.max_hp = base_hearts
+            p.hp = base_hearts
+        else:
+            p.max_hp = carry_player.max_hp
+            p.hp = min(carry_player.hp, p.max_hp)
+            p.shoot_cooldown = carry_player.shoot_cooldown
 
-        _enemies = []
-        for _e in MAP_DICT[_current_level_str]["enemies"]:
-            func = globals()[_e[0]](_e[1][0], _e[1][1])
-            _enemies.append(func)
+        cx, cy = MAP_DICT[level_str]["chest"]
+        c_rect = pygame.Rect(cx, cy, 16, 16)
+        c_open = False
 
-        _shoot_cooldown = MAP_DICT[_current_level_str]["shoot_cooldown"]
+        es = []
+        for e_name, (ex, ey) in MAP_DICT[level_str]["enemies"]:
+            es.append(globals()[e_name](ex, ey))
 
-        _enemy_projectiles = []
-        _projectiles = []
-        _shoot_timer = 0.0
-        _dead = False
-        return _player, _enemies, _enemy_projectiles, _projectiles, _shoot_timer, _dead, _chest_x, _chest_y, _chest_rect, _chest_open, _shoot_cooldown
+        enemy_ps = []
+        ps = []
+        dead = False
+        return p, es, enemy_ps, ps, dead, c_rect, c_open
 
-    player, enemies, enemy_projectiles, projectiles, shoot_timer, dead, chest_x, chest_y, chest_rect, chest_open, shoot_cooldown = reset_game()
+    player, enemies, enemy_projectiles, projectiles, dead, chest_rect, chest_open = reset_level()
     running = True
 
     while running:
         if dead:
             action = end_menu(window, screen, clock, "You Died.\nPress 'q' to quit or 'r' to restart")
             if action == "restart":
-                player, enemies, enemy_projectiles, projectiles, shoot_timer, dead, chest_x, chest_y, chest_rect, chest_open, shoot_cooldown = reset_game()
+                current_level = 1
+                tmx, solids = load_level("assets/maps/map1.tmx")
+                player, enemies, enemy_projectiles, projectiles, dead, chest_rect, chest_open = reset_level()
                 continue
             pygame.quit()
             sys.exit()
 
         dt = clock.tick(FPS) / 1000.0
-        shoot_timer = max(0.0, shoot_timer - dt)
+
+        player.shoot_timer = max(0.0, player.shoot_timer - dt)
 
         if player.hurt_timer > 0:
             player.hurt_timer = max(0.0, player.hurt_timer - dt)
@@ -436,15 +477,17 @@ def main():
                     if action == "resume":
                         continue
                     if action == "restart":
-                        player, enemies, enemy_projectiles, projectiles, shoot_timer, dead, chest_x, chest_y, chest_rect, chest_open = reset_game()
+                        current_level = 1
+                        tmx, solids = load_level("assets/maps/map1.tmx")
+                        player, enemies, enemy_projectiles, projectiles, dead, chest_rect, chest_open = reset_level()
                         break
                     pygame.quit()
                     sys.exit()
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if shoot_timer == 0.0:
+                if player.shoot_timer == 0.0:
                     shoot(projectiles, player)
-                    shoot_timer = shoot_cooldown
+                    player.shoot_timer = player.shoot_cooldown
 
         keys = pygame.key.get_pressed()
         player.vx = 0.0
@@ -459,24 +502,36 @@ def main():
             allow_step=player.on_ground
         )
 
-#-----------------------------------------------------------------------------------------------
-
-        if (not chest_open) and (player.hitbox.colliderect(
-                chest_rect) or player.hitbox.right == chest_rect.left or player.hitbox.left == chest_rect.right):
+        if (not chest_open) and (
+            player.hitbox.colliderect(chest_rect)
+            or player.hitbox.right == chest_rect.left
+            or player.hitbox.left == chest_rect.right
+        ):
             chest_open = True
+            level_str = "lvl" + str(current_level)
+            for r in MAP_DICT[level_str].get("chest_reward", []):
+                apply_reward(player, r)
             open_chest(window, screen, clock, current_level)
 
-        current_level_str = "lvl" + str(current_level)
-        end_x, end_y = MAP_DICT[current_level_str]["end"]
+        level_str = "lvl" + str(current_level)
+        end_x, end_y = MAP_DICT[level_str]["end"]
         end_rect = pygame.Rect(end_x, end_y, 16, 16)
-        if player.hitbox.colliderect(end_rect) or player.hitbox.right == end_rect.left or player.hitbox.left == end_rect.right:
+
+        if (
+            player.hitbox.colliderect(end_rect)
+            or player.hitbox.right == end_rect.left
+            or player.hitbox.left == end_rect.right
+        ):
             current_level += 1
-            map_num = "map" + str(current_level)
-            tmx, solids = load_level(f"assets/maps/{map_num}.tmx")
-            player, enemies, enemy_projectiles, projectiles, shoot_timer, dead, chest_x, chest_y, chest_rect, chest_open, shoot_cooldown = reset_game()
+            next_level_str = "lvl" + str(current_level)
+            if next_level_str not in MAP_DICT:
+                pygame.quit()
+                sys.exit()
 
-
-# -----------------------------------------------------------------------------------------------
+            map_path = MAP_DICT[next_level_str]["map"] + ".tmx"
+            tmx, solids = load_level(map_path)
+            player, enemies, enemy_projectiles, projectiles, dead, chest_rect, chest_open = reset_level(player)
+            continue
 
         if player.jump_buffer > 0 and player.on_ground:
             player.vy = -JUMP_VEL
