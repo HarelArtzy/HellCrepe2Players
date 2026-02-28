@@ -4,8 +4,24 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="31bf454b-279d-4aff-a5b6-da730738c2b1" name="Changes" comment="level 2 working">
+    <list default="true" id="31bf454b-279d-4aff-a5b6-da730738c2b1" name="Changes" comment="chests working for all changes">
+      <change afterPath="$PROJECT_DIR$/assets/enemies/waffle/waffle_frame1.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/assets/enemies/waffle/waffle_frame2.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/assets/maps/map3.1.tmx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/assets/maps/map3.2.tmx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/assets/maps/map3.tmx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/classes.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/functions.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pytmx/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pytmx/pytmx.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pytmx/util_pygame.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pytmx/util_pygame_sdl2.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pytmx/util_pyglet.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pytmx/util_pysdl2.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/server.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/settings.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/assets/maps/map1.tmx" beforeDir="false" afterPath="$PROJECT_DIR$/assets/maps/map1.tmx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/assets/maps/map2.tmx" beforeDir="false" afterPath="$PROJECT_DIR$/assets/maps/map2.tmx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
     </list>
@@ -24,21 +40,21 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
-  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
-  "lastFilter": {
-    "state": "OPEN",
-    "assignee": "HarelArtzy"
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;HarelArtzy&quot;
   }
-}]]></component>
-  <component name="GithubPullRequestsUISettings"><![CDATA[{
-  "selectedUrlAndAccountId": {
-    "url": "https://github.com/HarelArtzy/HellCrepe.git",
-    "accountId": "2a38bbad-44ac-4156-adda-c7c54723f4d5"
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/HarelArtzy/HellCrepe.git&quot;,
+    &quot;accountId&quot;: &quot;2a38bbad-44ac-4156-adda-c7c54723f4d5&quot;
   }
-}]]></component>
-  <component name="ProjectColorInfo"><![CDATA[{
-  "associatedIndex": 3
-}]]></component>
+}</component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 3
+}</component>
   <component name="ProjectId" id="3AFdmDgEoiErRJiHlTeNglHmMju" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
@@ -47,27 +63,54 @@
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
     "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.classes.executor": "Run",
     "Python.functions.executor": "Run",
     "Python.main.executor": "Run",
+    "Python.server.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
     "git-widget-placeholder": "master",
     "junie.onboarding.icon.badge.shown": "true",
-    "last_opened_file_path": "C:/Users/artzy/PycharmProjects/HellCrepe/assets/maps",
+    "last_opened_file_path": "C:/Users/artzy/PycharmProjects/HellCrepe",
     "to.speed.mode.migration.done": "true"
   }
 }]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
+      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe" />
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\maps" />
+      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\enemies\waffle" />
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\GUI" />
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\enemies\pancake" />
-      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\player" />
-      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\tileset" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe" />
     </key>
+  </component>
+  <component name="RunManager">
+    <configuration name="main" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
+      <module name="HellCrepe" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/main.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
   </component>
   <component name="SharedIndexes">
     <attachedChunks>
@@ -116,7 +159,15 @@
       <option name="project" value="LOCAL" />
       <updated>1772226608131</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="chests working for all changes">
+      <option name="closed" value="true" />
+      <created>1772229643898</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1772229643898</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -135,6 +186,7 @@
     <MESSAGE value="restart/quit" />
     <MESSAGE value="missing door to next level" />
     <MESSAGE value="level 2 working" />
-    <option name="LAST_COMMIT_MESSAGE" value="level 2 working" />
+    <MESSAGE value="chests working for all changes" />
+    <option name="LAST_COMMIT_MESSAGE" value="chests working for all changes" />
   </component>
 </project>
