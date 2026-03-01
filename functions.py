@@ -263,7 +263,7 @@ def make_enemies(level_str):
     return es
 
 
-def swap_map_keep_state(new_level, current_level):
+def swap_map_keep_state(current_level, new_level):
     new_level_str = "lvl" + str(new_level)
 
     map_path = MAP_DICT[new_level_str]["map"] + ".tmx"

@@ -4,20 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="31bf454b-279d-4aff-a5b6-da730738c2b1" name="Changes" comment="gi/aura">
-      <change afterPath="$PROJECT_DIR$/assets/enemies/Amrany/Amrany_frame1.png" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/enemies/Amrany/Amrany_frame2.png" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/enemies/cookie/cookie_frame1.png" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/maps/map2.1.tmx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/maps/map4.tmx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/tileset/boss.png" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/tileset/boss_tiles.tsx" afterDir="false" />
+    <list default="true" id="31bf454b-279d-4aff-a5b6-da730738c2b1" name="Changes" comment="final boss added">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/assets/maps/level1.tmx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/assets/maps/map3.tmx" beforeDir="false" afterPath="$PROJECT_DIR$/assets/maps/map3.tmx" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/classes.py" beforeDir="false" afterPath="$PROJECT_DIR$/classes.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/functions.py" beforeDir="false" afterPath="$PROJECT_DIR$/functions.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/server.py" beforeDir="false" afterPath="$PROJECT_DIR$/server.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/settings.py" beforeDir="false" afterPath="$PROJECT_DIR$/settings.py" afterDir="false" />
     </list>
@@ -84,7 +73,7 @@
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.server">
+  <component name="RunManager" selected="Python.main">
     <configuration name="main" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
       <module name="HellCrepe" />
       <option name="ENV_FILES" value="" />
@@ -107,7 +96,7 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="server" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+    <configuration name="server" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
       <module name="HellCrepe" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -129,11 +118,6 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <recent_temporary>
-      <list>
-        <item itemvalue="Python.server" />
-      </list>
-    </recent_temporary>
   </component>
   <component name="SharedIndexes">
     <attachedChunks>
@@ -206,7 +190,15 @@
       <option name="project" value="LOCAL" />
       <updated>1772310533550</updated>
     </task>
-    <option name="localTasksCounter" value="8" />
+    <task id="LOCAL-00008" summary="final boss added">
+      <option name="closed" value="true" />
+      <created>1772386864607</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1772386864607</updated>
+    </task>
+    <option name="localTasksCounter" value="9" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -227,6 +219,7 @@
     <MESSAGE value="level 2 working" />
     <MESSAGE value="chests working for all changes" />
     <MESSAGE value="gi/aura" />
-    <option name="LAST_COMMIT_MESSAGE" value="gi/aura" />
+    <MESSAGE value="final boss added" />
+    <option name="LAST_COMMIT_MESSAGE" value="final boss added" />
   </component>
 </project>
