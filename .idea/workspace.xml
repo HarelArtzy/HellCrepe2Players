@@ -4,26 +4,22 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="31bf454b-279d-4aff-a5b6-da730738c2b1" name="Changes" comment="chests working for all changes">
-      <change afterPath="$PROJECT_DIR$/assets/enemies/waffle/waffle_frame1.png" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/enemies/waffle/waffle_frame2.png" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/maps/map3.1.tmx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/maps/map3.2.tmx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/maps/map3.tmx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/classes.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/functions.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/pytmx/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/pytmx/pytmx.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/pytmx/util_pygame.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/pytmx/util_pygame_sdl2.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/pytmx/util_pyglet.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/pytmx/util_pysdl2.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/server.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/settings.py" afterDir="false" />
+    <list default="true" id="31bf454b-279d-4aff-a5b6-da730738c2b1" name="Changes" comment="gi/aura">
+      <change afterPath="$PROJECT_DIR$/assets/enemies/Amrany/Amrany_frame1.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/assets/enemies/Amrany/Amrany_frame2.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/assets/enemies/cookie/cookie_frame1.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/assets/maps/map2.1.tmx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/assets/maps/map4.tmx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/assets/tileset/boss.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/assets/tileset/boss_tiles.tsx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/assets/maps/map1.tmx" beforeDir="false" afterPath="$PROJECT_DIR$/assets/maps/map1.tmx" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/assets/maps/map2.tmx" beforeDir="false" afterPath="$PROJECT_DIR$/assets/maps/map2.tmx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/assets/maps/level1.tmx" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/assets/maps/map3.tmx" beforeDir="false" afterPath="$PROJECT_DIR$/assets/maps/map3.tmx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/classes.py" beforeDir="false" afterPath="$PROJECT_DIR$/classes.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/functions.py" beforeDir="false" afterPath="$PROJECT_DIR$/functions.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/server.py" beforeDir="false" afterPath="$PROJECT_DIR$/server.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/settings.py" beforeDir="false" afterPath="$PROJECT_DIR$/settings.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -60,35 +56,35 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.classes.executor": "Run",
-    "Python.functions.executor": "Run",
-    "Python.main.executor": "Run",
-    "Python.server.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "git-widget-placeholder": "master",
-    "junie.onboarding.icon.badge.shown": "true",
-    "last_opened_file_path": "C:/Users/artzy/PycharmProjects/HellCrepe",
-    "to.speed.mode.migration.done": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.classes.executor&quot;: &quot;Run&quot;,
+    &quot;Python.functions.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main.executor&quot;: &quot;Run&quot;,
+    &quot;Python.server.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;junie.onboarding.icon.badge.shown&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/artzy/PycharmProjects/HellCrepe/assets/enemies/Amrany&quot;,
+    &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
-      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe" />
+      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\enemies\Amrany" />
+      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\enemies\cookie" />
+      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\tileset" />
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\maps" />
-      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\enemies\waffle" />
-      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\GUI" />
-      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\enemies\pancake" />
+      <recent name="C:\Users\artzy\PycharmProjects\HellCrepe\assets\tileset\dungeon_sidescroller-Raou" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
       <recent name="C:\Users\artzy\PycharmProjects\HellCrepe" />
     </key>
   </component>
-  <component name="RunManager">
+  <component name="RunManager" selected="Python.server">
     <configuration name="main" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
       <module name="HellCrepe" />
       <option name="ENV_FILES" value="" />
@@ -111,6 +107,33 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
+    <configuration name="server" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="HellCrepe" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/server.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <recent_temporary>
+      <list>
+        <item itemvalue="Python.server" />
+      </list>
+    </recent_temporary>
   </component>
   <component name="SharedIndexes">
     <attachedChunks>
@@ -167,7 +190,23 @@
       <option name="project" value="LOCAL" />
       <updated>1772229643898</updated>
     </task>
-    <option name="localTasksCounter" value="6" />
+    <task id="LOCAL-00006" summary="gi/aura">
+      <option name="closed" value="true" />
+      <created>1772310371168</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1772310371168</updated>
+    </task>
+    <task id="LOCAL-00007" summary="gi/aura">
+      <option name="closed" value="true" />
+      <created>1772310533550</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1772310533550</updated>
+    </task>
+    <option name="localTasksCounter" value="8" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -187,6 +226,7 @@
     <MESSAGE value="missing door to next level" />
     <MESSAGE value="level 2 working" />
     <MESSAGE value="chests working for all changes" />
-    <option name="LAST_COMMIT_MESSAGE" value="chests working for all changes" />
+    <MESSAGE value="gi/aura" />
+    <option name="LAST_COMMIT_MESSAGE" value="gi/aura" />
   </component>
 </project>

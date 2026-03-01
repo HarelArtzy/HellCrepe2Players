@@ -1,5 +1,7 @@
+# classes.py
 import pygame
 from settings import *
+import random
 
 
 class Player:
@@ -116,16 +118,16 @@ class Enemy:
             img = pygame.transform.flip(img, True, False)
         self.image = img
 
-    def update(self, dt, player_rect, enemy_projectiles):
-        self.update_ai(dt, player_rect)
+    def update(self, dt, player_rect, enemy_projectiles, enemies, solids=None):
+        self.update_ai(dt, player_rect, enemies, solids)
         self.update_animation(dt)
         self.shoot_timer = max(0.0, self.shoot_timer - dt)
-        self.try_shoot(player_rect, enemy_projectiles)
+        self.try_shoot(player_rect, enemy_projectiles, enemies)
 
-    def update_ai(self, dt, player_rect):
+    def update_ai(self, dt, player_rect, enemies, solids):
         pass
 
-    def try_shoot(self, player_rect, enemy_projectiles):
+    def try_shoot(self, player_rect, enemy_projectiles, enemies):
         pass
 
     def draw(self, screen):
@@ -138,14 +140,15 @@ class Pancake(Enemy):
             "assets/enemies/pancake/pancake_frame1.png",
             "assets/enemies/pancake/pancake_frame1.png"
         ])
+        self.use_gravity = True
 
-    def update_ai(self, dt, player_rect):
+    def update_ai(self, dt, player_rect, enemies, solids):
         if player_rect.centerx < self.rect.centerx:
             self.vx = -ENEMY_SPEED
         else:
             self.vx = ENEMY_SPEED
 
-    def try_shoot(self, player_rect, enemy_projectiles):
+    def try_shoot(self, player_rect, enemy_projectiles, enemies):
         if self.shoot_timer > 0:
             return
 
@@ -172,14 +175,15 @@ class Waffle(Enemy):
             "assets/enemies/waffle/waffle_frame1.png",
             "assets/enemies/waffle/waffle_frame2.png"
         ])
+        self.use_gravity = True
 
-    def update_ai(self, dt, player_rect):
+    def update_ai(self, dt, player_rect, enemies, solids):
         if player_rect.centerx < self.rect.centerx:
             self.vx = -ENEMY_SPEED
         else:
             self.vx = ENEMY_SPEED
 
-    def try_shoot(self, player_rect, enemy_projectiles):
+    def try_shoot(self, player_rect, enemy_projectiles, enemies):
         if self.shoot_timer > 0:
             return
 
@@ -198,3 +202,82 @@ class Waffle(Enemy):
 
         enemy_projectiles.append(Projectile(sx, sy, vx, vy, radius=3, ttl=ENEMY_BULLET_TTL))
         self.shoot_timer = self.shoot_cooldown
+
+
+class Cookie(Enemy):
+    def __init__(self, x, y):
+        super().__init__(x, y, [
+            "assets/enemies/cookie/cookie_frame1.png",
+            "assets/enemies/cookie/cookie_frame1.png"
+        ])
+        self.use_gravity = False
+
+    def update_ai(self, dt, player_rect, enemies, solids):
+        if player_rect.centerx < self.rect.centerx:
+            self.vx = -ENEMY_SPEED
+        else:
+            self.vx = ENEMY_SPEED
+
+    def try_shoot(self, player_rect, enemy_projectiles, enemies):
+        if self.shoot_timer > 0:
+            return
+
+        sx, sy = self.rect.centerx, self.rect.centery
+        dx = player_rect.centerx - sx
+        dy = player_rect.centery - sy
+        length = (dx * dx + dy * dy) ** 0.5
+        if length == 0:
+            return
+
+        dx /= length
+        dy /= length
+
+        vx = dx * ENEMY_BULLET_SPEED
+        vy = dy * ENEMY_BULLET_SPEED
+
+        enemy_projectiles.append(Projectile(sx, sy, vx, vy, radius=3, ttl=ENEMY_BULLET_TTL))
+        self.shoot_timer = self.shoot_cooldown
+
+
+class Amrany(Enemy):
+    def __init__(self, x, y):
+        paths = [
+            "assets/enemies/Amrany/Amrany_frame1.png",
+            "assets/enemies/Amrany/Amrany_frame2.png"
+        ]
+        super().__init__(x, y, paths)
+        self.use_gravity = True
+
+        self.spawn_cooldown = ENEMY_SHOOT_COOLDOWN
+        self.spawn_timer = 0.0
+
+        self.rect = pygame.Rect(x, y, 64, 144)
+
+        self.frames = [pygame.image.load(p).convert_alpha() for p in paths]
+        self.frames = [pygame.transform.scale(img, (64, 144)) for img in self.frames]
+        self.image = self.frames[0]
+
+        self.hp = 67
+        self.max_hp = 67
+
+    def update_ai(self, dt, player_rect, enemies, solids):
+        self.vx = 0.0
+
+    def update(self, dt, player_rect, enemy_projectiles, enemies, solids=None):
+        self.update_ai(dt, player_rect, enemies, solids)
+        self.update_animation(dt)
+        self.spawn_timer = max(0.0, self.spawn_timer - dt)
+        self.try_shoot(player_rect, enemy_projectiles, enemies)
+
+    def try_shoot(self, player_rect, enemy_projectiles, enemies):
+        if self.spawn_timer > 0:
+            return
+
+        direction = -1 if player_rect.centerx < self.rect.centerx else 1
+        direction = -1 if player_rect.centerx < self.rect.centerx else 1
+        x_offset = (self.rect.width // 2) + (ENEMY_SIZE // 2) + 6
+        spawn_x = self.rect.centerx + direction * x_offset
+        spawn_y = random.randrange(self.rect.top, self.rect.bottom - ENEMY_SIZE-10)
+        enemies.append(Cookie(int(spawn_x - ENEMY_SIZE // 2), int(spawn_y)))
+
+        self.spawn_timer = self.spawn_cooldown

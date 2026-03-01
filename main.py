@@ -1,3 +1,4 @@
+# main.py
 # /// script
 # dependencies = [
 #   "pygame-ce",
@@ -12,35 +13,52 @@ from settings import *
 from functions import (
     load_level, move_and_collide, shoot, draw_tmx,
     pause_menu, end_menu, open_chest,
-    apply_reward, make_enemies, swap_map_keep_state
+    apply_reward, make_enemies, swap_map_keep_state,
+    calc_view
 )
-from classes import Player
+from classes import Player, Amrany
 
 
 async def main():
-    current_level = 1
+    current_level = STARTING_LVL
     visual_advanced = False
     locked = True
     pygame.init()
-    window = pygame.display.set_mode((BASE_W * SCALE, BASE_H * SCALE))
-    screen = pygame.Surface((BASE_W, BASE_H))
+
+    window = pygame.display.set_mode((1920, 1080))
     pygame.display.set_caption("Tiled TMX + Collision + Jump + Shoot")
     clock = pygame.time.Clock()
 
     full_heart_img = pygame.image.load("assets/ui/full_heart.png").convert_alpha()
     broken_heart_img = pygame.image.load("assets/ui/broken_heart.png").convert_alpha()
+    boss_font = pygame.font.SysFont("arial", 12, bold=True)
+
+    base_w = BASE_W
+    base_h = BASE_H
+    screen = pygame.Surface((base_w, base_h))
+    scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h)
 
     level_str = "lvl" + str(current_level)
+    if "window" in MAP_DICT[level_str]:
+        base_w, base_h = MAP_DICT[level_str]["window"]
+        screen = pygame.Surface((base_w, base_h))
+        scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h)
+
     tmx, solids = load_level(MAP_DICT[level_str]["map"] + ".tmx")
     end_x, end_y = MAP_DICT[level_str]["end"]
     end_rect = pygame.Rect(end_x, end_y, 16, 16)
 
     def reset_level(carry_player: Player | None = None):
-        nonlocal visual_advanced, locked, end_rect, tmx, solids
+        nonlocal visual_advanced, locked, end_rect, tmx, solids, base_w, base_h, screen, scale, off_x, off_y, scaled_w, scaled_h
         visual_advanced = False
         locked = True
 
         _level_str = "lvl" + str(current_level)
+        if "window" in MAP_DICT[_level_str]:
+            base_w, base_h = MAP_DICT[_level_str]["window"]
+        screen = pygame.Surface((base_w, base_h))
+        scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h)
+
         px, py = MAP_DICT[_level_str]["start"]
         _p = Player(px, py)
 
@@ -72,9 +90,9 @@ async def main():
 
     while running:
         if dead:
-            action = await end_menu(window, screen, clock, "You Died.\nPress 'q' to quit or 'r' to restart")
+            action = await end_menu(window, screen, clock, "You Died.\nPress 'q' to quit or 'r' to restart", base_w, base_h, scale, off_x, off_y)
             if action == "restart":
-                current_level = 1
+                current_level = STARTING_LVL
                 player, enemies, enemy_projectiles, projectiles, dead, chest_rect, chest_open = reset_level()
                 continue
             pygame.quit()
@@ -99,22 +117,23 @@ async def main():
                     player.jump_buffer = JUMP_BUFFER_TIME
 
                 if event.key == pygame.K_ESCAPE:
-                    action = await pause_menu(window, screen, clock)
+                    action = await pause_menu(window, screen, clock, base_w, base_h, scale, off_x, off_y)
                     if action == "resume":
                         continue
                     if action == "restart":
-                        current_level = 1
+                        current_level = STARTING_LVL
                         player, enemies, enemy_projectiles, projectiles, dead, chest_rect, chest_open = reset_level()
                         break
                     pygame.quit()
                     return
 
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if player.shoot_timer == 0.0:
-                    shoot(projectiles, player)
-                    player.shoot_timer = player.shoot_cooldown
-
         keys = pygame.key.get_pressed()
+
+        mouse_buttons = pygame.mouse.get_pressed()
+        if mouse_buttons[0] and player.shoot_timer == 0.0:
+            shoot(projectiles, player, scale, off_x, off_y)
+            player.shoot_timer = player.shoot_cooldown
+
         player.vx = 0.0
         if keys[pygame.K_a] or keys[pygame.K_LEFT]:
             player.vx = -player.move_speed
@@ -133,13 +152,28 @@ async def main():
             chest_open = True
             for r in MAP_DICT[level_str].get("chest_reward", []):
                 apply_reward(player, r)
-            result = await open_chest(window, screen, clock, current_level)
+            result = await open_chest(window, screen, clock, current_level, base_w, base_h, scale, off_x, off_y)
             if result == "quit":
                 pygame.quit()
                 return
 
+        if (not visual_advanced) and chest_open and MAP_DICT[level_str].get("chest_change_map", False):
+            tmx, solids, end_rect, chest_rect, chest_open, current_level = swap_map_keep_state(current_level, current_level + 1)
+            level_str = "lvl" + str(current_level)
+            if "window" in MAP_DICT[level_str]:
+                base_w, base_h = MAP_DICT[level_str]["window"]
+            screen = pygame.Surface((base_w, base_h))
+            scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h)
+            visual_advanced = True
+            continue
+
         if (not visual_advanced) and len(enemies) == 0 and MAP_DICT[level_str].get("cleared", False):
             tmx, solids, end_rect, chest_rect, chest_open, current_level = swap_map_keep_state(current_level, current_level + 1)
+            level_str = "lvl" + str(current_level)
+            if "window" in MAP_DICT[level_str]:
+                base_w, base_h = MAP_DICT[level_str]["window"]
+            screen = pygame.Surface((base_w, base_h))
+            scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h)
             visual_advanced = True
             locked = False
             continue
@@ -158,9 +192,10 @@ async def main():
             player.on_ground = False
             player.jump_buffer = 0.0
 
-        for e in enemies:
-            e.update(dt, player.hitbox, enemy_projectiles)
-            e.vy += GRAVITY * dt
+        for e in enemies[:]:
+            e.update(dt, player.hitbox, enemy_projectiles, enemies, solids)
+            if getattr(e, "use_gravity", True):
+                e.vy += GRAVITY * dt
             e.vy, e.on_ground = move_and_collide(e.rect, e.vx, e.vy, solids, dt, allow_step=False)
 
         player.update_animation(dt)
@@ -186,7 +221,7 @@ async def main():
                 continue
 
             r = p.rect
-            if r.right < 0 or r.left > BASE_W or r.bottom < 0 or r.top > BASE_H:
+            if r.right < 0 or r.left > base_w or r.bottom < 0 or r.top > base_h:
                 continue
 
             hit_wall = False
@@ -220,7 +255,7 @@ async def main():
                 continue
 
             r = p.rect
-            if r.right < 0 or r.left > BASE_W or r.bottom < 0 or r.top > BASE_H:
+            if r.right < 0 or r.left > base_w or r.bottom < 0 or r.top > base_h:
                 continue
 
             hit_wall = False
@@ -245,6 +280,34 @@ async def main():
         screen.fill((15, 15, 20))
         draw_tmx(screen, tmx)
 
+        boss = None
+        for e in enemies:
+            if isinstance(e, Amrany):
+                boss = e
+                break
+
+        if boss is not None:
+            bar_w = 220
+            bar_h = 10
+            x = (base_w - bar_w) // 2
+            y = 6
+
+            ratio = 0.0
+            if boss.max_hp > 0:
+                ratio = boss.hp / boss.max_hp
+            if ratio < 0:
+                ratio = 0
+            if ratio > 1:
+                ratio = 1
+
+            pygame.draw.rect(screen, (0, 0, 0), (x - 2, y - 2, bar_w + 4, bar_h + 4))
+            pygame.draw.rect(screen, (60, 60, 60), (x, y, bar_w, bar_h))
+            pygame.draw.rect(screen, (220, 60, 60), (x, y, int(bar_w * ratio), bar_h))
+
+            hp_text = boss_font.render(f"{boss.hp}/{boss.max_hp}", True, (255, 255, 255))
+            text_rect = hp_text.get_rect(center=(x + bar_w // 2, y + bar_h // 2))
+            screen.blit(hp_text, text_rect)
+
         for p in projectiles:
             p.draw(screen)
 
@@ -257,15 +320,16 @@ async def main():
             e.draw(screen)
 
         for i in range(player.max_hp):
-            x = 8 + i * 20
-            y = 8
+            hx = 8 + i * 20
+            hy = 8
             if i < player.hp:
-                screen.blit(full_heart_img, (x, y))
+                screen.blit(full_heart_img, (hx, hy))
             else:
-                screen.blit(broken_heart_img, (x, y))
+                screen.blit(broken_heart_img, (hx, hy))
 
-        scaled = pygame.transform.scale(screen, (BASE_W * SCALE, BASE_H * SCALE))
-        window.blit(scaled, (0, 0))
+        window.fill((0, 0, 0))
+        scaled = pygame.transform.scale(screen, (scaled_w, scaled_h))
+        window.blit(scaled, (off_x, off_y))
         pygame.display.flip()
 
         await asyncio.sleep(0)

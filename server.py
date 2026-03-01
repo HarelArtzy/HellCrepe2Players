@@ -209,84 +209,84 @@ def handle_client_request(resource: str, method: str, body_bytes: bytes, client_
         send_simple_text(client_socket, "200 OK", str(n + 1))
         return
 
-    if path == "/calculate-area":
-        if method != "GET":
-            handle_client_request("/400", "GET", b"", client_socket)
-            return
-        params = parse_query_string(qs)
-        if "height" not in params or "width" not in params:
-            handle_client_request("/400", "GET", b"", client_socket)
-            return
-        try:
-            h = float(params["height"])
-            w = float(params["width"])
-        except ValueError:
-            handle_client_request("/400", "GET", b"", client_socket)
-            return
-        area = (h * w) / 2.0
-        send_simple_text(client_socket, "200 OK", str(area))
-        return
-
-    if path == "/upload":
-        if method != "POST":
-            handle_client_request("/400", "GET", b"", client_socket)
-            return
-        params = parse_query_string(qs)
-        if "file-name" not in params:
-            handle_client_request("/400", "GET", b"", client_socket)
-            return
-
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-        filename = safe_basename(params["file-name"])
-        if not filename:
-            handle_client_request("/400", "GET", b"", client_socket)
-            return
-
-        if not body_bytes:
-            handle_client_request("/400", "GET", b"", client_socket)
-            return
-
-        out_path = os.path.join(UPLOAD_DIR, filename)
-        try:
-            with open(out_path, "wb") as f:
-                f.write(body_bytes)
-        except OSError:
-            handle_client_request("/error", "GET", b"", client_socket)
-            return
-
-        send_simple_text(client_socket, "200 OK", "OK")
-        return
-
-    if path == "/image":
-        if method != "GET":
-            handle_client_request("/400", "GET", b"", client_socket)
-            return
-        params = parse_query_string(qs)
-        if "image-name" not in params:
-            handle_client_request("/400", "GET", b"", client_socket)
-            return
-
-        filename = safe_basename(params["image-name"])
-        if not filename:
-            handle_client_request("/400", "GET", b"", client_socket)
-            return
-
-        full_path = os.path.join(UPLOAD_DIR, filename)
-        if not os.path.isfile(full_path):
-            handle_client_request("/404", "GET", b"", client_socket)
-            return
-
-        data = get_file_data(full_path)
-        if data is None:
-            handle_client_request("/error", "GET", b"", client_socket)
-            return
-
-        send_bytes(client_socket, "200 OK", data, get_content_type(full_path))
-        return
-
-    if method != "GET":
-        handle_client_request("/400", "GET", b"", client_socket)
-        return
+    # if path == "/calculate-area":
+    #     if method != "GET":
+    #         handle_client_request("/400", "GET", b"", client_socket)
+    #         return
+    #     params = parse_query_string(qs)
+    #     if "height" not in params or "width" not in params:
+    #         handle_client_request("/400", "GET", b"", client_socket)
+    #         return
+    #     try:
+    #         h = float(params["height"])
+    #         w = float(params["width"])
+    #     except ValueError:
+    #         handle_client_request("/400", "GET", b"", client_socket)
+    #         return
+    #     area = (h * w) / 2.0
+    #     send_simple_text(client_socket, "200 OK", str(area))
+    #     return
+    #
+    # if path == "/upload":
+    #     if method != "POST":
+    #         handle_client_request("/400", "GET", b"", client_socket)
+    #         return
+    #     params = parse_query_string(qs)
+    #     if "file-name" not in params:
+    #         handle_client_request("/400", "GET", b"", client_socket)
+    #         return
+    #
+    #     os.makedirs(UPLOAD_DIR, exist_ok=True)
+    #     filename = safe_basename(params["file-name"])
+    #     if not filename:
+    #         handle_client_request("/400", "GET", b"", client_socket)
+    #         return
+    #
+    #     if not body_bytes:
+    #         handle_client_request("/400", "GET", b"", client_socket)
+    #         return
+    #
+    #     out_path = os.path.join(UPLOAD_DIR, filename)
+    #     try:
+    #         with open(out_path, "wb") as f:
+    #             f.write(body_bytes)
+    #     except OSError:
+    #         handle_client_request("/error", "GET", b"", client_socket)
+    #         return
+    #
+    #     send_simple_text(client_socket, "200 OK", "OK")
+    #     return
+    #
+    # if path == "/image":
+    #     if method != "GET":
+    #         handle_client_request("/400", "GET", b"", client_socket)
+    #         return
+    #     params = parse_query_string(qs)
+    #     if "image-name" not in params:
+    #         handle_client_request("/400", "GET", b"", client_socket)
+    #         return
+    #
+    #     filename = safe_basename(params["image-name"])
+    #     if not filename:
+    #         handle_client_request("/400", "GET", b"", client_socket)
+    #         return
+    #
+    #     full_path = os.path.join(UPLOAD_DIR, filename)
+    #     if not os.path.isfile(full_path):
+    #         handle_client_request("/404", "GET", b"", client_socket)
+    #         return
+    #
+    #     data = get_file_data(full_path)
+    #     if data is None:
+    #         handle_client_request("/error", "GET", b"", client_socket)
+    #         return
+    #
+    #     send_bytes(client_socket, "200 OK", data, get_content_type(full_path))
+    #     return
+    #
+    # if method != "GET":
+    #     handle_client_request("/400", "GET", b"", client_socket)
+    #     return
 
     if path == "/" or path == "":
         relative_path = DEFAULT_URL
