@@ -3,12 +3,14 @@
 # dependencies = [
 #   "pygame-ce",
 #   "pytmx",
+#   "websockets",
 # ]
 # ///
 
 import argparse
 import asyncio
 import json
+import sys
 from contextlib import suppress
 from pathlib import Path
 
@@ -29,9 +31,224 @@ def level_key(level: int) -> str:
     return f"lvl{level}"
 
 
-async def send_json(writer: asyncio.StreamWriter, payload: dict) -> None:
-    writer.write((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
-    await writer.drain()
+def is_web_runtime() -> bool:
+    return sys.platform in ("emscripten", "wasi")
+
+
+def get_browser_location() -> tuple[str, str] | None:
+    try:
+        import js  # type: ignore
+        protocol = str(js.window.location.protocol)
+        hostname = str(js.window.location.hostname)
+        return protocol, hostname
+    except Exception:
+        pass
+    try:
+        from platform import window  # type: ignore
+        protocol = str(window.location.protocol)
+        hostname = str(window.location.hostname)
+        return protocol, hostname
+    except Exception:
+        return None
+
+
+def build_ws_url(host: str, port: int, ws_path: str) -> str:
+    path = ws_path if ws_path.startswith("/") else f"/{ws_path}"
+
+    if host.startswith("ws://") or host.startswith("wss://"):
+        return host if host.endswith(path) else f"{host}{path}"
+
+    scheme = "ws"
+    ws_host = host
+    if is_web_runtime():
+        loc = get_browser_location()
+        if loc is not None:
+            protocol, browser_host = loc
+            scheme = "wss" if protocol == "https:" else "ws"
+            if host in ("127.0.0.1", "0.0.0.0", "localhost", ""):
+                ws_host = browser_host
+
+    return f"{scheme}://{ws_host}:{port}{path}"
+
+
+def _decode_ws_payload(payload: object) -> str:
+    if isinstance(payload, bytes):
+        return payload.decode("utf-8", errors="replace")
+    return str(payload)
+
+
+class BrowserWebSocketClient:
+    def __init__(self, url: str):
+        self.url = url
+        self.queue: asyncio.Queue[str] = asyncio.Queue()
+        self.open_event = asyncio.Event()
+        self.close_event = asyncio.Event()
+        self.error: str | None = None
+        self.closed = False
+        self._proxies: list[object] = []
+
+        ws_ctor = None
+        try:
+            import js  # type: ignore
+            ws_ctor = js.WebSocket
+        except Exception:
+            try:
+                from platform import window  # type: ignore
+                ws_ctor = window.WebSocket
+            except Exception:
+                ws_ctor = None
+
+        if ws_ctor is None:
+            raise RuntimeError("Browser WebSocket API not available.")
+
+        self.ws = None
+        ctor_errors: list[str] = []
+
+        # 1) Direct `.new(...)` on explicit browser globals.
+        try:
+            import js  # type: ignore
+            try:
+                self.ws = js.WebSocket.new(url)
+            except Exception as exc:
+                ctor_errors.append(f"js.WebSocket.new: {exc}")
+            if self.ws is None:
+                try:
+                    self.ws = js.window.WebSocket.new(url)
+                except Exception as exc:
+                    ctor_errors.append(f"js.window.WebSocket.new: {exc}")
+            if self.ws is None:
+                try:
+                    self.ws = js.Reflect.construct(js.WebSocket, js.Array.new(url))
+                except Exception as exc:
+                    ctor_errors.append(f"Reflect.construct(js.WebSocket,...): {exc}")
+            if self.ws is None:
+                try:
+                    self.ws = js.window.eval(f"new WebSocket({json.dumps(url)})")
+                except Exception as exc:
+                    ctor_errors.append(f"js.window.eval(new WebSocket): {exc}")
+        except Exception as exc:
+            ctor_errors.append(f"import js: {exc}")
+
+        # 2) platform.window variants used by some pygbag builds.
+        if self.ws is None:
+            try:
+                from platform import window  # type: ignore
+                try:
+                    self.ws = window.WebSocket.new(url)
+                except Exception as exc:
+                    ctor_errors.append(f"window.WebSocket.new: {exc}")
+                if self.ws is None:
+                    try:
+                        self.ws = window.eval(f"new WebSocket({json.dumps(url)})")
+                    except Exception as exc:
+                        ctor_errors.append(f"window.eval(new WebSocket): {exc}")
+            except Exception as exc:
+                ctor_errors.append(f"import platform.window: {exc}")
+
+        # 3) Legacy fallback from constructor reference (may still fail on strict wrappers).
+        if self.ws is None:
+            try:
+                self.ws = ws_ctor.new(url)
+            except Exception as exc:
+                ctor_errors.append(f"ws_ctor.new: {exc}")
+                try:
+                    self.ws = ws_ctor(url)
+                except Exception as exc2:
+                    ctor_errors.append(f"ws_ctor(...): {exc2}")
+
+        if self.ws is None:
+            summary = "; ".join(ctor_errors[-4:])
+            raise RuntimeError(f"WebSocket constructor failed: {summary}")
+
+        def wrap_callback(cb):
+            try:
+                from pyodide.ffi import create_proxy  # type: ignore
+                proxy = create_proxy(cb)
+                self._proxies.append(proxy)
+                return proxy
+            except Exception:
+                return cb
+
+        def on_open(_evt=None):
+            self.open_event.set()
+
+        def on_message(evt):
+            data = getattr(evt, "data", "")
+            try:
+                data = data.to_py()
+            except Exception:
+                pass
+            self.queue.put_nowait(str(data))
+
+        def on_error(_evt=None):
+            self.error = "WebSocket connection error."
+            self.open_event.set()
+
+        def on_close(_evt=None):
+            self.closed = True
+            self.close_event.set()
+            self.open_event.set()
+
+        open_cb = wrap_callback(on_open)
+        message_cb = wrap_callback(on_message)
+        error_cb = wrap_callback(on_error)
+        close_cb = wrap_callback(on_close)
+
+        try:
+            self.ws.addEventListener("open", open_cb)
+            self.ws.addEventListener("message", message_cb)
+            self.ws.addEventListener("error", error_cb)
+            self.ws.addEventListener("close", close_cb)
+        except Exception:
+            self.ws.onopen = open_cb
+            self.ws.onmessage = message_cb
+            self.ws.onerror = error_cb
+            self.ws.onclose = close_cb
+
+    async def wait_open(self, timeout_s: float) -> str | None:
+        try:
+            await asyncio.wait_for(self.open_event.wait(), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            return f"Timeout after {timeout_s:.1f}s"
+
+        ready_state = int(getattr(self.ws, "readyState", -1))
+        if ready_state == 1:
+            return None
+        return self.error or "WebSocket did not open."
+
+    async def recv(self) -> str | None:
+        while True:
+            if self.closed and self.queue.empty():
+                return None
+            try:
+                return await asyncio.wait_for(self.queue.get(), timeout=0.25)
+            except asyncio.TimeoutError:
+                await asyncio.sleep(0)
+
+    async def send(self, text: str) -> None:
+        if self.closed:
+            raise ConnectionError("WebSocket is closed")
+        self.ws.send(text)
+
+    async def close(self) -> None:
+        if self.closed:
+            return
+        with suppress(Exception):
+            self.ws.close()
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self.close_event.wait(), timeout=1.0)
+
+
+async def send_json(conn: object, payload: dict) -> None:
+    raw = json.dumps(payload, separators=(",", ":"))
+    if isinstance(conn, asyncio.StreamWriter):
+        conn.write((raw + "\n").encode("utf-8"))
+        await conn.drain()
+        return
+    await conn.send(raw)
 
 
 async def read_network_messages(reader: asyncio.StreamReader, net_state: dict) -> None:
@@ -42,6 +259,32 @@ async def read_network_messages(reader: asyncio.StreamReader, net_state: dict) -
             return
         try:
             msg = json.loads(line.decode("utf-8"))
+        except json.JSONDecodeError:
+            continue
+
+        msg_type = msg.get("type")
+        if msg_type == "welcome":
+            net_state["player_id"] = msg.get("player_id")
+        elif msg_type == "state":
+            net_state["latest_state"] = msg
+        elif msg_type == "error":
+            net_state["error"] = msg.get("message", "Server error.")
+
+
+async def read_network_messages_ws(ws_conn: object, net_state: dict) -> None:
+    while True:
+        try:
+            payload = await ws_conn.recv()
+        except Exception:
+            net_state["error"] = "Disconnected from server."
+            return
+
+        if payload is None:
+            net_state["error"] = "Disconnected from server."
+            return
+
+        try:
+            msg = json.loads(_decode_ws_payload(payload))
         except json.JSONDecodeError:
             continue
 
@@ -131,10 +374,28 @@ async def connect_with_feedback(
     body_font: pygame.font.Font,
     host: str,
     port: int,
+    transport: str,
+    ws_path: str,
     timeout_s: float = 8.0,
-) -> tuple[asyncio.StreamReader | None, asyncio.StreamWriter | None, str | None]:
+) -> tuple[object | None, object | None, str | None, str]:
     loop = asyncio.get_running_loop()
-    connect_task = asyncio.create_task(asyncio.open_connection(host, port))
+    if transport == "ws":
+        endpoint = build_ws_url(host, port, ws_path)
+        if is_web_runtime():
+            try:
+                browser_ws = BrowserWebSocketClient(endpoint)
+            except Exception as exc:
+                return None, None, f"{endpoint} | {exc.__class__.__name__}: {exc}", "ws"
+            connect_task = asyncio.create_task(browser_ws.wait_open(timeout_s))
+        else:
+            try:
+                import websockets
+            except Exception as exc:
+                return None, None, f"{endpoint} | websockets import failed: {exc}", "ws"
+            connect_task = asyncio.create_task(websockets.connect(endpoint))
+    else:
+        endpoint = f"{host}:{port}"
+        connect_task = asyncio.create_task(asyncio.open_connection(host, port))
     started = loop.time()
 
     while True:
@@ -143,26 +404,34 @@ async def connect_with_feedback(
                 connect_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await connect_task
-                return None, None, "Connection cancelled by user."
+                return None, None, "Connection cancelled by user.", transport
 
         if connect_task.done():
             try:
+                if transport == "ws":
+                    if is_web_runtime():
+                        err = connect_task.result()
+                        if err is not None:
+                            return None, None, f"{endpoint} | {err}", "ws"
+                        return None, browser_ws, None, "ws"
+                    ws_conn = connect_task.result()
+                    return None, ws_conn, None, "ws"
                 reader, writer = connect_task.result()
-                return reader, writer, None
+                return reader, writer, None, "tcp"
             except Exception as exc:
-                return None, None, f"{exc.__class__.__name__}: {exc}"
+                return None, None, f"{endpoint} | {exc.__class__.__name__}: {exc}", transport
 
         elapsed = loop.time() - started
         if elapsed >= timeout_s:
             connect_task.cancel()
             with suppress(asyncio.CancelledError):
                 await connect_task
-            return None, None, f"Timeout after {timeout_s:.1f}s"
+            return None, None, f"{endpoint} | Timeout after {timeout_s:.1f}s", transport
 
         dots = "." * (int(elapsed * 3) % 4)
         surface = pygame.Surface((UI_W, UI_H))
         surface.fill((15, 15, 20))
-        render_center_text(surface, title_font, f"Connecting to {host}:{port}{dots}", (235, 235, 235))
+        render_center_text(surface, title_font, f"Connecting to {endpoint}{dots}", (235, 235, 235))
         elapsed_text = body_font.render(f"Elapsed: {elapsed:.1f}s", True, (180, 180, 195))
         surface.blit(elapsed_text, elapsed_text.get_rect(center=(UI_W // 2, UI_H // 2 + 62)))
         present_scaled(window, surface)
@@ -211,7 +480,7 @@ def load_player_preview(
     return scaled
 
 
-async def main(host: str, port: int) -> None:
+async def main(host: str, port: int, transport: str, ws_path: str) -> None:
     pygame.init()
     window = pygame.display.set_mode((WINDOW_W, WINDOW_H))
     pygame.display.set_caption("HellCrepe Multiplayer Client")
@@ -228,8 +497,21 @@ async def main(host: str, port: int) -> None:
     lobby_small_font = pygame.font.SysFont("arial", 22)
     lobby_arrow_font = pygame.font.SysFont("arial", 56, bold=True)
 
-    reader, writer, connect_error = await connect_with_feedback(window, overlay_font, info_font, host, port, timeout_s=8.0)
-    if reader is None or writer is None:
+    selected_transport = transport.lower()
+    if selected_transport == "auto":
+        selected_transport = "ws" if is_web_runtime() else "ws"
+
+    reader, writer, connect_error, active_transport = await connect_with_feedback(
+        window,
+        overlay_font,
+        info_font,
+        host,
+        port,
+        selected_transport,
+        ws_path,
+        timeout_s=8.0,
+    )
+    if writer is None:
         await show_connection_error_screen(
             window,
             overlay_font,
@@ -242,7 +524,10 @@ async def main(host: str, port: int) -> None:
         return
 
     net_state = {"player_id": None, "latest_state": None, "error": None}
-    read_task = asyncio.create_task(read_network_messages(reader, net_state))
+    if active_transport == "ws":
+        read_task = asyncio.create_task(read_network_messages_ws(writer, net_state))
+    else:
+        read_task = asyncio.create_task(read_network_messages(reader, net_state))
 
     visual_cache: dict[int, tuple] = {}
     current_level = STARTING_LVL
@@ -638,18 +923,26 @@ async def main(host: str, port: int) -> None:
     with suppress(asyncio.CancelledError):
         await read_task
     with suppress(Exception):
-        writer.close()
-        await writer.wait_closed()
+        if active_transport == "tcp":
+            writer.close()
+            await writer.wait_closed()
+        else:
+            await writer.close()
+            wait_closed = getattr(writer, "wait_closed", None)
+            if callable(wait_closed):
+                await wait_closed()
     pygame.quit()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="HellCrepe multiplayer client")
     parser.add_argument("--host", default="127.0.0.1", help="Server host/IP")
-    parser.add_argument("--port", type=int, default=9000, help="Server TCP port")
+    parser.add_argument("--port", type=int, default=9000, help="Server port")
+    parser.add_argument("--transport", choices=["auto", "tcp", "ws"], default="ws", help="Network transport")
+    parser.add_argument("--ws-path", default="/ws", help="WebSocket path")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    asyncio.run(main(args.host, args.port))
+    asyncio.run(main(args.host, args.port, args.transport, args.ws_path))
