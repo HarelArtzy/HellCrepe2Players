@@ -956,6 +956,8 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
             controls_text = lobby_small_font.render("Type username  |  Left/Right: skin  |  Enter: ready", True, (190, 190, 205))
             screen.blit(controls_text, controls_text.get_rect(center=(sw // 2, card.bottom - 28)))
         else:
+            # Keep connection/waiting screens neutral instead of showing map tiles.
+            screen.fill((0, 0, 0))
             wait_msg = "Waiting for server state..."
             if net_state.get("error"):
                 wait_msg = net_state["error"]
