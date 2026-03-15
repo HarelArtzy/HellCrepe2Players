@@ -47,6 +47,18 @@ def level_key(level: int) -> str:
     return f"lvl{level}"
 
 
+def resolve_ws_request_path(websocket: object, ws_path: str, explicit_path: str | None = None) -> str:
+    req_path = explicit_path
+    if req_path is None:
+        req_path = getattr(websocket, "path", None)
+    if req_path is None:
+        request = getattr(websocket, "request", None)
+        req_path = getattr(request, "path", None) if request is not None else None
+    if req_path is None:
+        return ws_path
+    return str(req_path)
+
+
 def move_and_collide(
     rect: pygame.Rect,
     vx: float,
@@ -1194,10 +1206,9 @@ class DungeonGameServer:
             await self.remove_player(player_id)
 
     async def handle_ws_client(self, websocket, path=None) -> None:
-        req_path = path
-        if req_path is None:
-            req_path = getattr(websocket, "path", self.ws_path)
-        if req_path != self.ws_path:
+        req_path = resolve_ws_request_path(websocket, self.ws_path, explicit_path=path)
+        parsed = urlsplit(req_path)
+        if parsed.path != self.ws_path:
             with suppress(Exception):
                 await websocket.close(code=1008, reason=f"Invalid path: expected {self.ws_path}")
             return
@@ -1511,10 +1522,7 @@ class MultiSessionDungeonServer:
             await self.cleanup_session_if_empty(session_id)
 
     async def handle_ws_client(self, websocket, path=None) -> None:
-        req_path = path
-        if req_path is None:
-            req_path = getattr(websocket, "path", self.ws_path)
-
+        req_path = resolve_ws_request_path(websocket, self.ws_path, explicit_path=path)
         parsed = urlsplit(req_path)
         if parsed.path != self.ws_path:
             with suppress(Exception):

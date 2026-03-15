@@ -10,8 +10,9 @@
 import argparse
 import asyncio
 import json
-import random
+import secrets
 import sys
+import time
 from contextlib import suppress
 from pathlib import Path
 from urllib.parse import quote
@@ -469,9 +470,18 @@ def sanitize_session_id(raw: str) -> str:
 
 
 def generate_session_id() -> str:
-    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-    token = "".join(random.choice(alphabet) for _ in range(6))
-    return f"{token.lower()}"
+    alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
+    try:
+        return "".join(secrets.choice(alphabet) for _ in range(6))
+    except Exception:
+        # Fallback keeps IDs changing even if secure randomness isn't available.
+        mixed = f"{time.time_ns()}-{time.perf_counter_ns()}"
+        state = abs(hash(mixed))
+        chars: list[str] = []
+        for _ in range(6):
+            state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
+            chars.append(alphabet[state % len(alphabet)])
+        return "".join(chars)
 
 
 def copy_text_to_clipboard(text: str) -> bool:
@@ -1088,21 +1098,37 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
                 shade.fill((0, 0, 0, 170))
                 screen.blit(shade, (0, 0))
 
-                menu_w = min(420, base_w - 40)
-                menu_h = 220
+                # Keep pause menu fully visible even on short/wide level resolutions.
+                menu_margin = max(8, min(24, min(base_w, base_h) // 12))
+                menu_w = min(420, max(240, base_w - (menu_margin * 2)))
+                menu_h = min(220, max(130, base_h - (menu_margin * 2)))
                 menu_x = (base_w - menu_w) // 2
                 menu_y = (base_h - menu_h) // 2
                 panel = pygame.Rect(menu_x, menu_y, menu_w, menu_h)
-                pygame.draw.rect(screen, (25, 25, 35), panel, border_radius=10)
-                pygame.draw.rect(screen, (100, 100, 140), panel, 2, border_radius=10)
+                radius = max(8, min(12, menu_h // 16))
+                pygame.draw.rect(screen, (25, 25, 35), panel, border_radius=radius)
+                pygame.draw.rect(screen, (100, 100, 140), panel, 2, border_radius=radius)
 
                 title = overlay_font.render("Paused", True, (240, 240, 250))
-                screen.blit(title, title.get_rect(center=(base_w // 2, menu_y + 34)))
+                title_center_y = panel.y + max(16, menu_h // 8) + (title.get_height() // 2)
+                screen.blit(title, title.get_rect(center=(base_w // 2, title_center_y)))
+
+                option_h = info_font.get_height()
+                options_count = max(1, len(pause_menu_options))
+                options_top = title_center_y + (title.get_height() // 2) + max(10, menu_h // 12) + (option_h // 2)
+                options_bottom = panel.bottom - max(16, menu_h // 9) - (option_h // 2)
+                if options_count == 1:
+                    option_y_positions = [((options_top + options_bottom) // 2)]
+                else:
+                    span = max(0, options_bottom - options_top)
+                    step = span / (options_count - 1)
+                    option_y_positions = [int(options_top + (idx * step)) for idx in range(options_count)]
 
                 for idx, option in enumerate(pause_menu_options):
                     color = (255, 220, 140) if idx == pause_menu_index else (220, 220, 230)
                     text = info_font.render(option, True, color)
-                    screen.blit(text, text.get_rect(center=(base_w // 2, menu_y + 86 + idx * 34)))
+                    option_y = option_y_positions[idx] if idx < len(option_y_positions) else panel.centery
+                    screen.blit(text, text.get_rect(center=(base_w // 2, option_y)))
 
             if chest_overlay_active:
                 shade = pygame.Surface((base_w, base_h), pygame.SRCALPHA)
