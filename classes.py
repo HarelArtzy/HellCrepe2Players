@@ -1,20 +1,43 @@
 # classes.py
 import pygame
+from pathlib import Path
 from settings import *
 import random
 
 
 class Player:
-    def __init__(self, x, y):
+    def __init__(self, x, y, skin_name: str | None = None):
         self.hitbox = pygame.Rect(x, y, 16, 22)
 
         self.sprite_w, self.sprite_h = 32, 32
         self.sprite_offset_x = -8
         self.sprite_offset_y = -10
 
+        self.skin_name = skin_name or "default"
+
+        root = Path(__file__).resolve().parent
+        if self.skin_name != "default":
+            skin_dir = root / "assets" / "player" / self.skin_name
+            frame_paths = [
+                skin_dir / "player_frame1.png",
+                skin_dir / "player_frame2.png",
+            ]
+        else:
+            frame_paths = [
+                root / "assets" / "player" / "player_frame1.png",
+                root / "assets" / "player" / "player_frame2.png",
+            ]
+
+        if not all(path.exists() for path in frame_paths):
+            frame_paths = [
+                root / "assets" / "player" / "player_frame1.png",
+                root / "assets" / "player" / "player_frame2.png",
+            ]
+            self.skin_name = "default"
+
         self.frames = [
-            pygame.image.load("assets/player/player_frame1.png").convert_alpha(),
-            pygame.image.load("assets/player/player_frame2.png").convert_alpha()
+            pygame.image.load(str(frame_paths[0])).convert_alpha(),
+            pygame.image.load(str(frame_paths[1])).convert_alpha()
         ]
         self.frames = [pygame.transform.scale(img, (self.sprite_w, self.sprite_h)) for img in self.frames]
         self.image = self.frames[0]

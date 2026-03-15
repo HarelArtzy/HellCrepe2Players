@@ -6,337 +6,650 @@
 # ]
 # ///
 
+import argparse
 import asyncio
+import json
+from contextlib import suppress
+from pathlib import Path
+
 import pygame
 
-from settings import *
-from functions import (
-    load_level, move_and_collide, shoot, draw_tmx,
-    pause_menu, end_menu, open_chest,
-    apply_reward, make_enemies, swap_map_keep_state,
-    calc_view
-)
-from classes import Player, Amrany
+from classes import Amrany, Cookie, Pancake, Player, Waffle
+from functions import calc_view, draw_tmx, load_level
+from settings import BASE_H, BASE_W, FPS, MAP_DICT, STARTING_LVL
 
 
-async def main():
-    current_level = STARTING_LVL
-    visual_advanced = False
-    locked = True
+WINDOW_W = 1920
+WINDOW_H = 1080
+UI_W = 1280
+UI_H = 720
+
+
+def level_key(level: int) -> str:
+    return f"lvl{level}"
+
+
+async def send_json(writer: asyncio.StreamWriter, payload: dict) -> None:
+    writer.write((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
+    await writer.drain()
+
+
+async def read_network_messages(reader: asyncio.StreamReader, net_state: dict) -> None:
+    while True:
+        line = await reader.readline()
+        if not line:
+            net_state["error"] = "Disconnected from server."
+            return
+        try:
+            msg = json.loads(line.decode("utf-8"))
+        except json.JSONDecodeError:
+            continue
+
+        msg_type = msg.get("type")
+        if msg_type == "welcome":
+            net_state["player_id"] = msg.get("player_id")
+        elif msg_type == "state":
+            net_state["latest_state"] = msg
+        elif msg_type == "error":
+            net_state["error"] = msg.get("message", "Server error.")
+
+
+def load_visual_level(level: int, cache: dict[int, tuple]) -> tuple | None:
+    if level in cache:
+        return cache[level]
+
+    key = level_key(level)
+    if key not in MAP_DICT:
+        return None
+
+    cfg = MAP_DICT[key]
+    base_w, base_h = cfg.get("window", (BASE_W, BASE_H))
+    tmx, _ = load_level(cfg["map"] + ".tmx")
+    cache[level] = (tmx, base_w, base_h)
+    return cache[level]
+
+
+def render_center_text(surface: pygame.Surface, font: pygame.font.Font, message: str, color: tuple[int, int, int]) -> None:
+    lines = message.splitlines() or [message]
+    rendered = [font.render(line, True, color) for line in lines]
+    line_h = font.get_linesize()
+    total_h = line_h * len(rendered)
+    y = (surface.get_height() - total_h) // 2
+    for text_surface in rendered:
+        x = (surface.get_width() - text_surface.get_width()) // 2
+        surface.blit(text_surface, (x, y))
+        y += line_h
+
+
+def present_scaled(window: pygame.Surface, surface: pygame.Surface) -> None:
+    scale, off_x, off_y, scaled_w, scaled_h = calc_view(
+        surface.get_width(),
+        surface.get_height(),
+        WINDOW_W,
+        WINDOW_H,
+    )
+    window.fill((0, 0, 0))
+    window.blit(pygame.transform.scale(surface, (scaled_w, scaled_h)), (off_x, off_y))
+    pygame.display.flip()
+
+
+async def show_connection_error_screen(
+    window: pygame.Surface,
+    title_font: pygame.font.Font,
+    body_font: pygame.font.Font,
+    host: str,
+    port: int,
+    reason: str,
+) -> None:
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return
+            if event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE):
+                return
+
+        surface = pygame.Surface((UI_W, UI_H))
+        surface.fill((15, 15, 20))
+
+        title = title_font.render("Can't connect to server", True, (255, 130, 130))
+        endpoint = body_font.render(f"{host}:{port}", True, (230, 230, 230))
+        details = body_font.render(reason[:120], True, (200, 200, 210))
+        hint = body_font.render("Press Esc or Enter to close", True, (170, 170, 185))
+
+        surface.blit(title, title.get_rect(center=(UI_W // 2, UI_H // 2 - 90)))
+        surface.blit(endpoint, endpoint.get_rect(center=(UI_W // 2, UI_H // 2 - 30)))
+        surface.blit(details, details.get_rect(center=(UI_W // 2, UI_H // 2 + 20)))
+        surface.blit(hint, hint.get_rect(center=(UI_W // 2, UI_H // 2 + 80)))
+
+        present_scaled(window, surface)
+        await asyncio.sleep(0)
+
+
+async def connect_with_feedback(
+    window: pygame.Surface,
+    title_font: pygame.font.Font,
+    body_font: pygame.font.Font,
+    host: str,
+    port: int,
+    timeout_s: float = 8.0,
+) -> tuple[asyncio.StreamReader | None, asyncio.StreamWriter | None, str | None]:
+    loop = asyncio.get_running_loop()
+    connect_task = asyncio.create_task(asyncio.open_connection(host, port))
+    started = loop.time()
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                connect_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await connect_task
+                return None, None, "Connection cancelled by user."
+
+        if connect_task.done():
+            try:
+                reader, writer = connect_task.result()
+                return reader, writer, None
+            except Exception as exc:
+                return None, None, f"{exc.__class__.__name__}: {exc}"
+
+        elapsed = loop.time() - started
+        if elapsed >= timeout_s:
+            connect_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await connect_task
+            return None, None, f"Timeout after {timeout_s:.1f}s"
+
+        dots = "." * (int(elapsed * 3) % 4)
+        surface = pygame.Surface((UI_W, UI_H))
+        surface.fill((15, 15, 20))
+        render_center_text(surface, title_font, f"Connecting to {host}:{port}{dots}", (235, 235, 235))
+        elapsed_text = body_font.render(f"Elapsed: {elapsed:.1f}s", True, (180, 180, 195))
+        surface.blit(elapsed_text, elapsed_text.get_rect(center=(UI_W // 2, UI_H // 2 + 62)))
+        present_scaled(window, surface)
+        await asyncio.sleep(0.05)
+
+
+def make_enemy_sprite(enemy_type: str, x: int, y: int):
+    if enemy_type == "Pancake":
+        return Pancake(x, y)
+    if enemy_type == "Waffle":
+        return Waffle(x, y)
+    if enemy_type == "Cookie":
+        return Cookie(x, y)
+    if enemy_type == "Amrany":
+        return Amrany(x, y)
+    return None
+
+
+def normalize_username(raw: str, fallback: str) -> str:
+    cleaned = raw.strip()
+    return cleaned[:20] if cleaned else fallback
+
+
+def load_player_preview(
+    skin_name: str,
+    preview_cache: dict[tuple[str, int], pygame.Surface],
+    preview_size: int = 96,
+) -> pygame.Surface:
+    cache_key = (skin_name, preview_size)
+    cached = preview_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    root = Path(__file__).resolve().parent
+    if skin_name != "default":
+        frame_path = root / "assets" / "player" / skin_name / "player_frame1.png"
+    else:
+        frame_path = root / "assets" / "player" / "player_frame1.png"
+
+    if not frame_path.exists():
+        frame_path = root / "assets" / "player" / "player_frame1.png"
+
+    image = pygame.image.load(str(frame_path)).convert_alpha()
+    scaled = pygame.transform.scale(image, (preview_size, preview_size))
+    preview_cache[cache_key] = scaled
+    return scaled
+
+
+async def main(host: str, port: int) -> None:
     pygame.init()
-
-    window = pygame.display.set_mode((1920, 1080))
-    pygame.display.set_caption("Tiled TMX + Collision + Jump + Shoot")
+    window = pygame.display.set_mode((WINDOW_W, WINDOW_H))
+    pygame.display.set_caption("HellCrepe Multiplayer Client")
     clock = pygame.time.Clock()
 
     full_heart_img = pygame.image.load("assets/ui/full_heart.png").convert_alpha()
     broken_heart_img = pygame.image.load("assets/ui/broken_heart.png").convert_alpha()
+
+    info_font = pygame.font.SysFont("arial", 18)
+    overlay_font = pygame.font.SysFont("arial", 28, bold=True)
     boss_font = pygame.font.SysFont("arial", 12, bold=True)
+    lobby_title_font = pygame.font.SysFont("arial", 44, bold=True)
+    lobby_body_font = pygame.font.SysFont("arial", 28)
+    lobby_small_font = pygame.font.SysFont("arial", 22)
+    lobby_arrow_font = pygame.font.SysFont("arial", 56, bold=True)
 
-    base_w = BASE_W
-    base_h = BASE_H
+    reader, writer, connect_error = await connect_with_feedback(window, overlay_font, info_font, host, port, timeout_s=8.0)
+    if reader is None or writer is None:
+        await show_connection_error_screen(
+            window,
+            overlay_font,
+            info_font,
+            host,
+            port,
+            connect_error or "Unknown connection error.",
+        )
+        pygame.quit()
+        return
+
+    net_state = {"player_id": None, "latest_state": None, "error": None}
+    read_task = asyncio.create_task(read_network_messages(reader, net_state))
+
+    visual_cache: dict[int, tuple] = {}
+    current_level = STARTING_LVL
+    current_visual = load_visual_level(current_level, visual_cache)
+    if current_visual is None:
+        current_visual = (None, BASE_W, BASE_H)
+
+    tmx, base_w, base_h = current_visual
     screen = pygame.Surface((base_w, base_h))
-    scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h)
+    scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h, WINDOW_W, WINDOW_H)
 
-    level_str = "lvl" + str(current_level)
-    if "window" in MAP_DICT[level_str]:
-        base_w, base_h = MAP_DICT[level_str]["window"]
-        screen = pygame.Surface((base_w, base_h))
-        scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h)
+    player_sprites: dict[int, Player] = {}
+    enemy_sprites: dict[int, object] = {}
+    preview_cache: dict[tuple[str, int], pygame.Surface] = {}
+    last_chest_event_id = 0
+    chest_overlay_messages: list[str] = []
+    chest_overlay_index = 0
+    chest_overlay_wait_release = True
+    session_phase = "waiting"
+    connected_players = 0
+    required_players = 2
 
-    tmx, solids = load_level(MAP_DICT[level_str]["map"] + ".tmx")
-    end_x, end_y = MAP_DICT[level_str]["end"]
-    end_rect = pygame.Rect(end_x, end_y, 16, 16)
-
-    def reset_level(carry_player: Player | None = None):
-        nonlocal visual_advanced, locked, end_rect, tmx, solids, base_w, base_h, screen, scale, off_x, off_y, scaled_w, scaled_h
-        visual_advanced = False
-        locked = True
-
-        _level_str = "lvl" + str(current_level)
-        if "window" in MAP_DICT[_level_str]:
-            base_w, base_h = MAP_DICT[_level_str]["window"]
-        screen = pygame.Surface((base_w, base_h))
-        scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h)
-
-        px, py = MAP_DICT[_level_str]["start"]
-        _p = Player(px, py)
-
-        if carry_player is None:
-            _p.max_hp = BASE_HEARTS
-            _p.hp = BASE_HEARTS
-        else:
-            _p.max_hp = carry_player.max_hp
-            _p.hp = min(carry_player.hp, _p.max_hp)
-            _p.shoot_cooldown = carry_player.shoot_cooldown
-            _p.move_speed = carry_player.move_speed
-
-        tmx, solids = load_level(MAP_DICT[_level_str]["map"] + ".tmx")
-        ex, ey = MAP_DICT[_level_str]["end"]
-        end_rect = pygame.Rect(ex, ey, 16, 16)
-
-        cx, cy = MAP_DICT[_level_str]["chest"]
-        c_rect = pygame.Rect(cx, cy, 16, 16)
-        c_open = False
-
-        es = make_enemies(_level_str)
-        enemy_ps = []
-        ps = []
-        dead_flag = False
-        return _p, es, enemy_ps, ps, dead_flag, c_rect, c_open
-
-    player, enemies, enemy_projectiles, projectiles, dead, chest_rect, chest_open = reset_level()
+    available_skins = ["default"]
+    lobby_username = ""
+    lobby_skin_index = 0
+    lobby_ready = False
+    lobby_initialized = False
+    lobby_owner_id = None
     running = True
 
     while running:
-        if dead:
-            action = await end_menu(window, screen, clock, "You Died.\nPress 'q' to quit or 'r' to restart", base_w, base_h, scale, off_x, off_y)
-            if action == "restart":
-                current_level = STARTING_LVL
-                player, enemies, enemy_projectiles, projectiles, dead, chest_rect, chest_open = reset_level()
-                continue
-            pygame.quit()
-            return
-
         dt = clock.tick(FPS) / 1000.0
-
-        player.shoot_timer = max(0.0, player.shoot_timer - dt)
-
-        if player.hurt_timer > 0:
-            player.hurt_timer = max(0.0, player.hurt_timer - dt)
-
-        if player.jump_buffer > 0:
-            player.jump_buffer = max(0.0, player.jump_buffer - dt)
+        restart_requested = False
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r and session_phase == "playing":
+                    restart_requested = True
 
-            if event.type == pygame.KEYDOWN:
-                if event.key in (pygame.K_SPACE, pygame.K_w, pygame.K_UP):
-                    player.jump_buffer = JUMP_BUFFER_TIME
+                if session_phase == "lobby":
+                    if event.key == pygame.K_RETURN:
+                        lobby_ready = not lobby_ready
+                    elif not lobby_ready:
+                        if event.key == pygame.K_LEFT:
+                            lobby_skin_index = (lobby_skin_index - 1) % max(1, len(available_skins))
+                        elif event.key == pygame.K_RIGHT:
+                            lobby_skin_index = (lobby_skin_index + 1) % max(1, len(available_skins))
+                        elif event.key == pygame.K_BACKSPACE:
+                            lobby_username = lobby_username[:-1]
+                        elif event.unicode and event.unicode.isprintable() and len(lobby_username) < 20:
+                            lobby_username += event.unicode
 
-                if event.key == pygame.K_ESCAPE:
-                    action = await pause_menu(window, screen, clock, base_w, base_h, scale, off_x, off_y)
-                    if action == "resume":
-                        continue
-                    if action == "restart":
-                        current_level = STARTING_LVL
-                        player, enemies, enemy_projectiles, projectiles, dead, chest_rect, chest_open = reset_level()
-                        break
-                    pygame.quit()
-                    return
+        latest_state = net_state.get("latest_state")
+        local_player = None
+        world = {}
+        players: list[dict] = []
+        player_id = net_state.get("player_id")
+        session: dict = {}
+
+        if latest_state is not None:
+            players = latest_state.get("players", [])
+            session = latest_state.get("session", {})
+            if player_id is None:
+                player_id = latest_state.get("you")
+                net_state["player_id"] = player_id
+            local_player = next((p for p in players if p.get("id") == player_id), None)
+            connected_players = int(session.get("connected_players", len(players)))
+            required_players = int(session.get("required_players", 2))
+
+            session_phase = str(session.get("phase", "waiting"))
+            maybe_skins = session.get("available_skins", available_skins)
+            if isinstance(maybe_skins, list):
+                parsed_skins = [str(s) for s in maybe_skins if str(s).strip()]
+                if parsed_skins:
+                    available_skins = parsed_skins
+                    lobby_skin_index %= len(available_skins)
+
+            if local_player is not None:
+                if lobby_owner_id != player_id:
+                    lobby_owner_id = player_id
+                    lobby_initialized = False
+
+                server_username = str(local_player.get("username", f"Player {player_id}"))
+                server_skin = str(local_player.get("skin", available_skins[0]))
+                server_ready = bool(local_player.get("ready", False))
+
+                if (not lobby_initialized) or session_phase == "waiting":
+                    lobby_username = server_username
+                    lobby_ready = server_ready
+                    if server_skin in available_skins:
+                        lobby_skin_index = available_skins.index(server_skin)
+                    else:
+                        lobby_skin_index = 0
+                    lobby_initialized = True
+                elif session_phase != "lobby":
+                    # Keep local controls inactive outside lobby.
+                    lobby_ready = server_ready
+
+                new_level = int(local_player.get("current_level", STARTING_LVL))
+                if new_level != current_level:
+                    maybe_visual = load_visual_level(new_level, visual_cache)
+                    if maybe_visual is not None:
+                        tmx, base_w, base_h = maybe_visual
+                        screen = pygame.Surface((base_w, base_h))
+                        scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h, WINDOW_W, WINDOW_H)
+                        current_level = new_level
+                world = latest_state.get("world", {})
+
+                chest_event_id = int(local_player.get("chest_event_id", 0))
+                if chest_event_id > last_chest_event_id:
+                    chest_event_level = int(local_player.get("chest_event_level", new_level))
+                    cfg = MAP_DICT.get(level_key(chest_event_level), {})
+                    msgs = [str(msg) for msg in cfg.get("chest_msg", []) if str(msg).strip()]
+                    if msgs:
+                        chest_overlay_messages = msgs
+                        chest_overlay_index = 0
+                        chest_overlay_wait_release = True
+                    last_chest_event_id = chest_event_id
+
+        if session_phase != "playing":
+            chest_overlay_messages = []
+            chest_overlay_index = 0
+            chest_overlay_wait_release = True
+
+        target_w, target_h = (base_w, base_h) if session_phase == "playing" else (UI_W, UI_H)
+        if screen.get_width() != target_w or screen.get_height() != target_h:
+            screen = pygame.Surface((target_w, target_h))
+            scale, off_x, off_y, scaled_w, scaled_h = calc_view(target_w, target_h, WINDOW_W, WINDOW_H)
 
         keys = pygame.key.get_pressed()
-
         mouse_buttons = pygame.mouse.get_pressed()
-        if mouse_buttons[0] and player.shoot_timer == 0.0:
-            shoot(projectiles, player, scale, off_x, off_y)
-            player.shoot_timer = player.shoot_cooldown
+        mx, my = pygame.mouse.get_pos()
 
-        player.vx = 0.0
-        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-            player.vx = -player.move_speed
-        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-            player.vx = player.move_speed
+        chest_overlay_active = chest_overlay_index < len(chest_overlay_messages)
+        if chest_overlay_active:
+            space_down = bool(keys[pygame.K_SPACE])
+            if chest_overlay_wait_release:
+                if not space_down:
+                    chest_overlay_wait_release = False
+            elif space_down:
+                chest_overlay_index += 1
+                chest_overlay_wait_release = True
+                chest_overlay_active = chest_overlay_index < len(chest_overlay_messages)
 
-        player.vy += GRAVITY * dt
-        player.vy, player.on_ground = move_and_collide(
-            player.hitbox, player.vx, player.vy, solids, dt,
-            allow_step=player.on_ground
-        )
+        aim_x = int((mx - off_x) / scale) if scale else 0
+        aim_y = int((my - off_y) / scale) if scale else 0
+        if screen.get_width() > 0:
+            aim_x = max(0, min(screen.get_width() - 1, aim_x))
+        if screen.get_height() > 0:
+            aim_y = max(0, min(screen.get_height() - 1, aim_y))
 
-        level_str = "lvl" + str(current_level)
-
-        if (not chest_open) and player.hitbox.colliderect(chest_rect):
-            chest_open = True
-            for r in MAP_DICT[level_str].get("chest_reward", []):
-                apply_reward(player, r)
-            result = await open_chest(window, screen, clock, current_level, base_w, base_h, scale, off_x, off_y)
-            if result == "quit":
-                pygame.quit()
-                return
-
-        if (not visual_advanced) and chest_open and MAP_DICT[level_str].get("chest_change_map", False):
-            tmx, solids, end_rect, chest_rect, chest_open, current_level = swap_map_keep_state(current_level, current_level + 1)
-            level_str = "lvl" + str(current_level)
-            if "window" in MAP_DICT[level_str]:
-                base_w, base_h = MAP_DICT[level_str]["window"]
-            screen = pygame.Surface((base_w, base_h))
-            scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h)
-            visual_advanced = True
-            continue
-
-        if (not visual_advanced) and len(enemies) == 0 and MAP_DICT[level_str].get("cleared", False):
-            tmx, solids, end_rect, chest_rect, chest_open, current_level = swap_map_keep_state(current_level, current_level + 1)
-            level_str = "lvl" + str(current_level)
-            if "window" in MAP_DICT[level_str]:
-                base_w, base_h = MAP_DICT[level_str]["window"]
-            screen = pygame.Surface((base_w, base_h))
-            scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h)
-            visual_advanced = True
-            locked = False
-            continue
-
-        if player.hitbox.colliderect(end_rect) and ((not MAP_DICT[level_str].get("cleared", False)) or (MAP_DICT[level_str].get("cleared", False) and (not locked))):
-            current_level += 1
-            next_level_str = "lvl" + str(current_level)
-            if next_level_str not in MAP_DICT:
-                pygame.quit()
-                return
-            player, enemies, enemy_projectiles, projectiles, dead, chest_rect, chest_open = reset_level(player)
-            continue
-
-        if player.jump_buffer > 0 and player.on_ground:
-            player.vy = -JUMP_VEL
-            player.on_ground = False
-            player.jump_buffer = 0.0
-
-        for e in enemies[:]:
-            e.update(dt, player.hitbox, enemy_projectiles, enemies, solids)
-            if getattr(e, "use_gravity", True):
-                e.vy += GRAVITY * dt
-            e.vy, e.on_ground = move_and_collide(e.rect, e.vx, e.vy, solids, dt, allow_step=False)
-
-        player.update_animation(dt)
-
-        for e in enemies:
-            if player.hurt_timer == 0 and player.hitbox.colliderect(e.rect):
-                player.hp -= 1
-                player.hurt_timer = INVINCIBILITY_TIME
-
-                if player.hitbox.centerx < e.rect.centerx:
-                    player.vx = -250
+        if net_state.get("error") is None:
+            try:
+                if session_phase == "lobby" and local_player is not None:
+                    fallback_name = f"Player {player_id}" if player_id is not None else "Player"
+                    username_to_send = normalize_username(lobby_username, fallback_name)
+                    chosen_skin = available_skins[lobby_skin_index] if available_skins else "default"
+                    await send_json(
+                        writer,
+                        {
+                            "type": "lobby",
+                            "username": username_to_send,
+                            "skin": chosen_skin,
+                            "ready": bool(lobby_ready),
+                        },
+                    )
                 else:
-                    player.vx = 250
-
-                player.vy = -200
-
-        for p in projectiles:
-            p.update(dt)
-
-        alive = []
-        for p in projectiles:
-            if p.ttl <= 0:
-                continue
-
-            r = p.rect
-            if r.right < 0 or r.left > base_w or r.bottom < 0 or r.top > base_h:
-                continue
-
-            hit_wall = False
-            for s in solids:
-                if r.colliderect(s):
-                    hit_wall = True
-                    break
-            if hit_wall:
-                continue
-
-            hit_enemy = False
-            for e in enemies:
-                if r.colliderect(e.rect):
-                    e.hp -= 1
-                    hit_enemy = True
-                    break
-            if hit_enemy:
-                continue
-
-            alive.append(p)
-
-        projectiles = alive
-        enemies = [e for e in enemies if e.hp > 0]
-
-        for p in enemy_projectiles:
-            p.update(dt)
-
-        alive_enemy = []
-        for p in enemy_projectiles:
-            if p.ttl <= 0:
-                continue
-
-            r = p.rect
-            if r.right < 0 or r.left > base_w or r.bottom < 0 or r.top > base_h:
-                continue
-
-            hit_wall = False
-            for s in solids:
-                if r.colliderect(s):
-                    hit_wall = True
-                    break
-            if hit_wall:
-                continue
-
-            if r.colliderect(player.hitbox):
-                if MODE != 1:
-                    player.hp -= 1
-                continue
-
-            alive_enemy.append(p)
-
-        enemy_projectiles = alive_enemy
-        if player.hp <= 0:
-            dead = True
+                    input_locked = (session_phase != "playing") or chest_overlay_active
+                    input_payload = {
+                        "type": "input",
+                        "left": bool(keys[pygame.K_a] or keys[pygame.K_LEFT]) and (not input_locked),
+                        "right": bool(keys[pygame.K_d] or keys[pygame.K_RIGHT]) and (not input_locked),
+                        "jump": bool(keys[pygame.K_SPACE] or keys[pygame.K_w] or keys[pygame.K_UP]) and (not input_locked),
+                        "shoot": bool(mouse_buttons[0]) and (not input_locked),
+                        "aim_x": aim_x,
+                        "aim_y": aim_y,
+                        "restart": restart_requested,
+                    }
+                    await send_json(writer, input_payload)
+            except Exception:
+                net_state["error"] = "Disconnected from server."
 
         screen.fill((15, 15, 20))
-        draw_tmx(screen, tmx)
+        if tmx is not None:
+            draw_tmx(screen, tmx)
 
-        boss = None
-        for e in enemies:
-            if isinstance(e, Amrany):
-                boss = e
-                break
+        if local_player is not None and session_phase == "playing":
+            chest = world.get("chest", {})
 
-        if boss is not None:
-            bar_w = 220
-            bar_h = 10
-            x = (base_w - bar_w) // 2
-            y = 6
+            for p_data in players:
+                if int(p_data.get("current_level", -1)) != current_level:
+                    continue
+                color = (255, 220, 120) if p_data.get("id") == player_id else (120, 220, 255)
+                for projectile in p_data.get("projectiles", []):
+                    pygame.draw.circle(
+                        screen,
+                        color,
+                        (int(projectile.get("x", 0)), int(projectile.get("y", 0))),
+                        int(projectile.get("radius", 3)),
+                    )
 
-            ratio = 0.0
-            if boss.max_hp > 0:
-                ratio = boss.hp / boss.max_hp
-            if ratio < 0:
-                ratio = 0
-            if ratio > 1:
-                ratio = 1
+            for projectile in world.get("enemy_projectiles", []):
+                pygame.draw.circle(
+                    screen,
+                    (255, 100, 100),
+                    (int(projectile.get("x", 0)), int(projectile.get("y", 0))),
+                    int(projectile.get("radius", 3)),
+                )
 
-            pygame.draw.rect(screen, (0, 0, 0), (x - 2, y - 2, bar_w + 4, bar_h + 4))
-            pygame.draw.rect(screen, (60, 60, 60), (x, y, bar_w, bar_h))
-            pygame.draw.rect(screen, (220, 60, 60), (x, y, int(bar_w * ratio), bar_h))
+            boss_enemy = None
+            visible_enemy_ids: set[int] = set()
+            for enemy in world.get("enemies", []):
+                enemy_id = int(enemy.get("id", -1))
+                enemy_type = str(enemy.get("type", ""))
+                ex = int(enemy.get("x", 0))
+                ey = int(enemy.get("y", 0))
+                ew = int(enemy.get("w", 32))
+                eh = int(enemy.get("h", 32))
+                evx = float(enemy.get("vx", 0.0))
 
-            hp_text = boss_font.render(f"{boss.hp}/{boss.max_hp}", True, (255, 255, 255))
-            text_rect = hp_text.get_rect(center=(x + bar_w // 2, y + bar_h // 2))
-            screen.blit(hp_text, text_rect)
+                sprite = enemy_sprites.get(enemy_id)
+                if sprite is None or sprite.__class__.__name__ != enemy_type:
+                    sprite = make_enemy_sprite(enemy_type, ex, ey)
+                    if sprite is None:
+                        fallback_rect = pygame.Rect(ex, ey, ew, eh)
+                        pygame.draw.rect(screen, (220, 80, 80), fallback_rect)
+                        continue
+                    enemy_sprites[enemy_id] = sprite
 
-        for p in projectiles:
-            p.draw(screen)
+                sprite.rect.x = ex
+                sprite.rect.y = ey
+                sprite.vx = evx
+                if hasattr(sprite, "update_animation"):
+                    sprite.update_animation(dt)
+                sprite.draw(screen)
+                visible_enemy_ids.add(enemy_id)
 
-        screen.blit(player.image, player.draw_pos)
+                if enemy_type == "Amrany":
+                    boss_enemy = enemy
 
-        for p in enemy_projectiles:
-            p.draw(screen)
+            stale_enemy_ids = [enemy_id for enemy_id in enemy_sprites if enemy_id not in visible_enemy_ids]
+            for enemy_id in stale_enemy_ids:
+                enemy_sprites.pop(enemy_id, None)
 
-        for e in enemies:
-            e.draw(screen)
+            if boss_enemy is not None:
+                bar_w = 220
+                bar_h = 10
+                x = (base_w - bar_w) // 2
+                y = 6
 
-        for i in range(player.max_hp):
-            hx = 8 + i * 20
-            hy = 8
-            if i < player.hp:
-                screen.blit(full_heart_img, (hx, hy))
+                ratio = 0.0
+                max_hp = max(1, int(boss_enemy.get("max_hp", 1)))
+                hp = int(boss_enemy.get("hp", 0))
+                ratio = max(0.0, min(1.0, hp / max_hp))
+
+                pygame.draw.rect(screen, (0, 0, 0), (x - 2, y - 2, bar_w + 4, bar_h + 4))
+                pygame.draw.rect(screen, (60, 60, 60), (x, y, bar_w, bar_h))
+                pygame.draw.rect(screen, (220, 60, 60), (x, y, int(bar_w * ratio), bar_h))
+
+                hp_text = boss_font.render(f"{hp}/{max_hp}", True, (255, 255, 255))
+                screen.blit(hp_text, hp_text.get_rect(center=(x + bar_w // 2, y + bar_h // 2)))
+
+            for p_data in players:
+                if int(p_data.get("current_level", -1)) != current_level:
+                    continue
+                pid = int(p_data.get("id", -1))
+                px = int(p_data.get("x", 0))
+                py = int(p_data.get("y", 0))
+                skin_name = str(p_data.get("skin", "default"))
+
+                sprite = player_sprites.get(pid)
+                if sprite is None or getattr(sprite, "skin_name", "default") != skin_name:
+                    sprite = Player(px, py, skin_name=skin_name)
+                    player_sprites[pid] = sprite
+
+                sprite.hitbox.x = px
+                sprite.hitbox.y = py
+                sprite.vx = float(p_data.get("vx", 0.0))
+                sprite.update_animation(dt)
+                screen.blit(sprite.image, sprite.draw_pos)
+
+                if pid != player_id:
+                    pname = normalize_username(str(p_data.get("username", "")), f"P{pid}")
+                    label = info_font.render(pname, True, (220, 235, 255))
+                    screen.blit(label, (sprite.hitbox.x - 2, sprite.hitbox.y - 15))
+
+            hp = max(0, int(local_player.get("hp", 0)))
+            max_hp = max(1, int(local_player.get("max_hp", 1)))
+            for i in range(max_hp):
+                hx = 8 + i * 20
+                hy = 8
+                if i < hp:
+                    screen.blit(full_heart_img, (hx, hy))
+                else:
+                    screen.blit(broken_heart_img, (hx, hy))
+
+            other_lines: list[str] = []
+            for p_data in players:
+                pid = int(p_data.get("id", -1))
+                if pid == player_id:
+                    continue
+                pname = normalize_username(str(p_data.get("username", "")), f"P{pid}")
+                other_lines.append(
+                    f"{pname} | L{int(p_data.get('current_level', 0))} | HP {int(p_data.get('hp', 0))}/{int(p_data.get('max_hp', 0))}"
+                )
+            for idx, line in enumerate(other_lines):
+                text = info_font.render(line, True, (220, 220, 220))
+                screen.blit(text, (base_w - text.get_width() - 8, 8 + idx * 16))
+
+            if local_player.get("dead", False):
+                if local_player.get("won", False):
+                    msg = "You Won. Press R to restart."
+                else:
+                    msg = "You Died. Press R to restart."
+                render_center_text(screen, overlay_font, msg, (255, 255, 255))
+
+            if chest_overlay_active:
+                shade = pygame.Surface((base_w, base_h), pygame.SRCALPHA)
+                shade.fill((0, 0, 0, 155))
+                screen.blit(shade, (0, 0))
+                render_center_text(screen, overlay_font, chest_overlay_messages[chest_overlay_index], (245, 245, 245))
+        elif local_player is not None and session_phase == "lobby":
+            screen.fill((12, 12, 18))
+            sw, sh = screen.get_width(), screen.get_height()
+
+            fallback_name = f"Player {player_id}" if player_id is not None else "Player"
+            your_name = normalize_username(lobby_username, fallback_name)
+            selected_skin = available_skins[lobby_skin_index] if available_skins else "default"
+
+            card_w = min(sw - 120, 900)
+            card_h = min(sh - 100, 560)
+            card = pygame.Rect((sw - card_w) // 2, (sh - card_h) // 2, card_w, card_h)
+            pygame.draw.rect(screen, (20, 20, 30), card, border_radius=14)
+            pygame.draw.rect(screen, (90, 90, 125), card, 2, border_radius=14)
+
+            other_player = next((p for p in players if p.get("id") != player_id), None)
+            if other_player is None:
+                top_line = "Waiting for other player..."
+                top_color = (220, 220, 220)
             else:
-                screen.blit(broken_heart_img, (hx, hy))
+                other_name = normalize_username(str(other_player.get("username", "")), f"P{other_player.get('id', '?')}")
+                other_ready = bool(other_player.get("ready", False))
+                top_line = f"{other_name} is {'READY' if other_ready else 'NOT READY'}"
+                top_color = (130, 240, 160) if other_ready else (240, 170, 130)
+
+            top_surface = lobby_title_font.render(top_line, True, top_color)
+            screen.blit(top_surface, ((sw - top_surface.get_width()) // 2, card.y + 24))
+
+            username_label = lobby_small_font.render("Username", True, (230, 230, 230))
+            username_box = pygame.Rect(card.x + 110, card.y + 100, card.w - 220, 52)
+            pygame.draw.rect(screen, (30, 30, 42), username_box, border_radius=6)
+            pygame.draw.rect(screen, (160, 160, 190), username_box, 2, border_radius=6)
+            username_text = lobby_body_font.render(your_name, True, (250, 250, 250))
+            screen.blit(username_label, (username_box.x, username_box.y - 20))
+            screen.blit(username_text, (username_box.x + 12, username_box.y + 12))
+
+            preview = load_player_preview(selected_skin, preview_cache, preview_size=144)
+            preview_rect = preview.get_rect(center=(sw // 2, card.y + 285))
+            screen.blit(preview, preview_rect)
+
+            left_arrow = lobby_arrow_font.render("<", True, (230, 230, 230))
+            right_arrow = lobby_arrow_font.render(">", True, (230, 230, 230))
+            screen.blit(left_arrow, left_arrow.get_rect(center=(preview_rect.left - 48, preview_rect.centery)))
+            screen.blit(right_arrow, right_arrow.get_rect(center=(preview_rect.right + 48, preview_rect.centery)))
+
+            skin_text = lobby_body_font.render(f"Skin: {selected_skin}", True, (220, 220, 230))
+            screen.blit(skin_text, skin_text.get_rect(center=(sw // 2, preview_rect.bottom + 32)))
+
+            ready_state = "READY" if lobby_ready else "NOT READY"
+            ready_color = (120, 240, 140) if lobby_ready else (255, 205, 120)
+            ready_text = lobby_body_font.render(f"You are {ready_state}", True, ready_color)
+            screen.blit(ready_text, ready_text.get_rect(center=(sw // 2, card.bottom - 64)))
+
+            controls_text = lobby_small_font.render("Type username  |  Left/Right: skin  |  Enter: ready", True, (190, 190, 205))
+            screen.blit(controls_text, controls_text.get_rect(center=(sw // 2, card.bottom - 28)))
+        else:
+            wait_msg = "Waiting for server state..."
+            if net_state.get("error"):
+                wait_msg = net_state["error"]
+            elif local_player is not None and session_phase == "waiting":
+                wait_msg = f"Waiting for Player 2 to join... ({connected_players}/{required_players})"
+            render_center_text(screen, overlay_font, wait_msg, (235, 235, 235))
 
         window.fill((0, 0, 0))
         scaled = pygame.transform.scale(screen, (scaled_w, scaled_h))
         window.blit(scaled, (off_x, off_y))
         pygame.display.flip()
-
         await asyncio.sleep(0)
 
+    read_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await read_task
+    with suppress(Exception):
+        writer.close()
+        await writer.wait_closed()
     pygame.quit()
-    return
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="HellCrepe multiplayer client")
+    parser.add_argument("--host", default="127.0.0.1", help="Server host/IP")
+    parser.add_argument("--port", type=int, default=9000, help="Server TCP port")
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    args = parse_args()
+    asyncio.run(main(args.host, args.port))
