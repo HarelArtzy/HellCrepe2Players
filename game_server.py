@@ -11,6 +11,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from urllib.parse import parse_qs, urlsplit
 
 import pygame
 import websockets
@@ -480,12 +481,21 @@ class SharedLevelState:
 
 
 class DungeonGameServer:
-    def __init__(self, host: str, port: int, max_players: int = 2, tcp_port: int = 0, ws_path: str = "/ws"):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        max_players: int = 2,
+        tcp_port: int = 0,
+        ws_path: str = "/ws",
+        session_id: str = "default",
+    ):
         self.host = host
         self.port = port
         self.tcp_port = tcp_port
         self.ws_path = ws_path if ws_path.startswith("/") else f"/{ws_path}"
         self.max_players = max_players
+        self.session_id = session_id
 
         self.players: dict[int, SimPlayer] = {}
         self.inputs: dict[int, PlayerInput] = {}
@@ -1023,6 +1033,7 @@ class DungeonGameServer:
             "you": player_id,
             "spectating_player_id": spectating_player_id,
             "session": {
+                "id": self.session_id,
                 "connected_players": len(self.players),
                 "required_players": self.max_players,
                 "ready": self.match_started or self.all_players_ready(),
@@ -1146,6 +1157,7 @@ class DungeonGameServer:
                     "player_id": player_id,
                     "tick_rate": FPS,
                     "max_players": self.max_players,
+                    "session_id": self.session_id,
                 },
             )
 
@@ -1214,6 +1226,7 @@ class DungeonGameServer:
                     "tick_rate": FPS,
                     "max_players": self.max_players,
                     "transport": "ws",
+                    "session_id": self.session_id,
                 },
             )
 
@@ -1278,23 +1291,347 @@ class DungeonGameServer:
                 await tick_task
 
 
+class MultiSessionDungeonServer:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        max_players_per_session: int = 2,
+        tcp_port: int = 0,
+        ws_path: str = "/ws",
+        max_sessions: int = 0,
+    ):
+        self.host = host
+        self.port = port
+        self.tcp_port = tcp_port
+        self.ws_path = ws_path if ws_path.startswith("/") else f"/{ws_path}"
+        self.max_players_per_session = max_players_per_session
+        self.max_sessions = max(0, int(max_sessions))
+
+        self.sessions: dict[str, DungeonGameServer] = {}
+        self.session_tasks: dict[str, asyncio.Task] = {}
+        self.next_session_num = 1
+
+    async def send_json(self, conn: object, payload: dict) -> None:
+        raw = json.dumps(payload, separators=(",", ":"))
+        if isinstance(conn, asyncio.StreamWriter):
+            conn.write((raw + "\n").encode("utf-8"))
+            await conn.drain()
+            return
+        await conn.send(raw)
+
+    def normalize_session_id(self, raw: str | None) -> str | None:
+        if raw is None:
+            return None
+        cleaned = "".join(ch for ch in str(raw) if ch.isalnum() or ch in ("-", "_")).strip()
+        if not cleaned:
+            return None
+        return cleaned[:32]
+
+    def next_session_id(self) -> str:
+        while True:
+            sid = f"s{self.next_session_num}"
+            self.next_session_num += 1
+            if sid not in self.sessions:
+                return sid
+
+    def ensure_session_task(self, session_id: str, session: DungeonGameServer) -> None:
+        task = self.session_tasks.get(session_id)
+        if task is None or task.done():
+            self.session_tasks[session_id] = asyncio.create_task(
+                session.game_loop(),
+                name=f"session-{session_id}",
+            )
+
+    def create_session(self, session_id: str) -> DungeonGameServer:
+        session = DungeonGameServer(
+            self.host,
+            self.port,
+            max_players=self.max_players_per_session,
+            tcp_port=0,
+            ws_path=self.ws_path,
+            session_id=session_id,
+        )
+        self.sessions[session_id] = session
+        self.ensure_session_task(session_id, session)
+        print(f"[multisession] created session '{session_id}'")
+        return session
+
+    def pick_session(self, requested_session: str | None) -> tuple[str | None, DungeonGameServer | None, str | None]:
+        wanted = self.normalize_session_id(requested_session)
+        if wanted is not None:
+            session = self.sessions.get(wanted)
+            if session is None:
+                if self.max_sessions and len(self.sessions) >= self.max_sessions:
+                    return None, None, "Session limit reached."
+                session = self.create_session(wanted)
+            elif session.next_free_player_id() is None:
+                return None, None, f"Session '{wanted}' is full."
+            self.ensure_session_task(wanted, session)
+            return wanted, session, None
+
+        candidates: list[tuple[int, str, DungeonGameServer]] = []
+        for sid, session in self.sessions.items():
+            if session.next_free_player_id() is None:
+                continue
+            self.ensure_session_task(sid, session)
+            candidates.append((len(session.players), sid, session))
+        if candidates:
+            # Prefer filling half-full rooms first so random matchmaking pairs up quickly.
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            _, sid, session = candidates[0]
+            return sid, session, None
+
+        if self.max_sessions and len(self.sessions) >= self.max_sessions:
+            return None, None, "All sessions are currently full."
+        sid = self.next_session_id()
+        session = self.create_session(sid)
+        return sid, session, None
+
+    async def close_connection(self, conn: object) -> None:
+        with suppress(Exception):
+            if isinstance(conn, asyncio.StreamWriter):
+                conn.close()
+                await conn.wait_closed()
+            else:
+                close_result = conn.close()
+                if inspect.isawaitable(close_result):
+                    await close_result
+                wait_closed = getattr(conn, "wait_closed", None)
+                if callable(wait_closed):
+                    maybe_wait = wait_closed()
+                    if inspect.isawaitable(maybe_wait):
+                        await maybe_wait
+
+    async def cleanup_session_if_empty(self, session_id: str) -> None:
+        session = self.sessions.get(session_id)
+        if session is None:
+            return
+        if session.players:
+            return
+
+        task = self.session_tasks.pop(session_id, None)
+        self.sessions.pop(session_id, None)
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+        print(f"[multisession] removed session '{session_id}'")
+
+    async def register_player(
+        self,
+        conn: object,
+        requested_session: str | None,
+        transport: str,
+    ) -> tuple[str | None, DungeonGameServer | None, int | None]:
+        session_id, session, pick_error = self.pick_session(requested_session)
+        if session is None or session_id is None:
+            with suppress(Exception):
+                await self.send_json(conn, {"type": "error", "message": pick_error or "No room available."})
+            await self.close_connection(conn)
+            return None, None, None
+
+        player_id = session.next_free_player_id()
+        if player_id is None:
+            with suppress(Exception):
+                await self.send_json(conn, {"type": "error", "message": "Selected room is full."})
+            await self.close_connection(conn)
+            return None, None, None
+
+        session.players[player_id] = session.create_player(player_id)
+        session.writers[player_id] = conn
+        session.reset_players_for_lobby()
+
+        welcome = {
+            "type": "welcome",
+            "player_id": player_id,
+            "tick_rate": FPS,
+            "max_players": session.max_players,
+            "session_id": session_id,
+        }
+        if transport == "ws":
+            welcome["transport"] = "ws"
+
+        try:
+            await self.send_json(conn, welcome)
+        except Exception:
+            await session.remove_player(player_id)
+            await self.cleanup_session_if_empty(session_id)
+            await self.close_connection(conn)
+            return None, None, None
+
+        print(
+            f"[multisession] session='{session_id}' connected player {player_id} "
+            f"({len(session.players)}/{session.max_players})"
+        )
+        return session_id, session, player_id
+
+    async def session_reaper_loop(self) -> None:
+        while True:
+            await asyncio.sleep(2.0)
+            for session_id in list(self.sessions.keys()):
+                await self.cleanup_session_if_empty(session_id)
+
+    async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        session_id, session, player_id = await self.register_player(writer, requested_session=None, transport="tcp")
+        if session is None or player_id is None or session_id is None:
+            return
+
+        try:
+            invalid_packets = 0
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+
+                try:
+                    decoded = line.decode("utf-8")
+                except UnicodeDecodeError:
+                    invalid_packets += 1
+                    if invalid_packets >= 3:
+                        break
+                    continue
+
+                try:
+                    msg = json.loads(decoded)
+                except json.JSONDecodeError:
+                    invalid_packets += 1
+                    if invalid_packets >= 3:
+                        break
+                    continue
+
+                invalid_packets = 0
+                msg_type = msg.get("type")
+                if msg_type == "input":
+                    session.apply_client_message(player_id, msg)
+                elif msg_type == "lobby":
+                    session.apply_lobby_message(player_id, msg)
+        finally:
+            await session.remove_player(player_id)
+            await self.cleanup_session_if_empty(session_id)
+
+    async def handle_ws_client(self, websocket, path=None) -> None:
+        req_path = path
+        if req_path is None:
+            req_path = getattr(websocket, "path", self.ws_path)
+
+        parsed = urlsplit(req_path)
+        if parsed.path != self.ws_path:
+            with suppress(Exception):
+                await websocket.close(code=1008, reason=f"Invalid path: expected {self.ws_path}")
+            return
+
+        requested_session = parse_qs(parsed.query).get("session", [None])[0]
+        session_id, session, player_id = await self.register_player(
+            websocket,
+            requested_session=requested_session,
+            transport="ws",
+        )
+        if session is None or player_id is None or session_id is None:
+            return
+
+        try:
+            invalid_packets = 0
+            async for payload in websocket:
+                if isinstance(payload, bytes):
+                    try:
+                        decoded = payload.decode("utf-8")
+                    except UnicodeDecodeError:
+                        invalid_packets += 1
+                        if invalid_packets >= 3:
+                            break
+                        continue
+                else:
+                    decoded = str(payload)
+
+                try:
+                    msg = json.loads(decoded)
+                except json.JSONDecodeError:
+                    invalid_packets += 1
+                    if invalid_packets >= 3:
+                        break
+                    continue
+
+                invalid_packets = 0
+                msg_type = msg.get("type")
+                if msg_type == "input":
+                    session.apply_client_message(player_id, msg)
+                elif msg_type == "lobby":
+                    session.apply_lobby_message(player_id, msg)
+        finally:
+            await session.remove_player(player_id)
+            await self.cleanup_session_if_empty(session_id)
+
+    async def run(self) -> None:
+        ws_server = await websockets.serve(self.handle_ws_client, self.host, self.port)
+        ws_targets = ", ".join(str(sock.getsockname()) for sock in (ws_server.sockets or []))
+        print(f"Dungeon WS server listening on {ws_targets}{self.ws_path}")
+        print("Matchmaking mode: multiple 2-player sessions enabled")
+
+        tcp_server = None
+        if self.tcp_port > 0:
+            tcp_server = await asyncio.start_server(self.handle_client, self.host, self.tcp_port)
+            tcp_targets = ", ".join(str(sock.getsockname()) for sock in (tcp_server.sockets or []))
+            print(f"Dungeon TCP server listening on {tcp_targets}")
+
+        reaper_task = asyncio.create_task(self.session_reaper_loop(), name="session-reaper")
+        try:
+            awaitables = [ws_server.serve_forever()]
+            if tcp_server is not None:
+                awaitables.append(tcp_server.serve_forever())
+            await asyncio.gather(*awaitables)
+        finally:
+            ws_server.close()
+            with suppress(Exception):
+                await ws_server.wait_closed()
+            if tcp_server is not None:
+                tcp_server.close()
+                with suppress(Exception):
+                    await tcp_server.wait_closed()
+
+            reaper_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await reaper_task
+
+            for session in list(self.sessions.values()):
+                for player_id in list(session.players.keys()):
+                    await session.remove_player(player_id)
+            for session_id in list(self.sessions.keys()):
+                await self.cleanup_session_if_empty(session_id)
+
+            for task in list(self.session_tasks.values()):
+                task.cancel()
+            for task in list(self.session_tasks.values()):
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
+            self.session_tasks.clear()
+            self.sessions.clear()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="HellCrepe multiplayer game server")
     parser.add_argument("--host", default="0.0.0.0", help="Host/IP to bind")
     parser.add_argument("--port", type=int, default=9000, help="WebSocket port")
     parser.add_argument("--ws-path", default="/ws", help="WebSocket path")
     parser.add_argument("--tcp-port", type=int, default=0, help="Optional legacy TCP port (0 disables)")
+    parser.add_argument(
+        "--max-sessions",
+        type=int,
+        default=0,
+        help="Maximum concurrent sessions (0 = unlimited)",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    server = DungeonGameServer(
+    server = MultiSessionDungeonServer(
         args.host,
         args.port,
-        max_players=2,
+        max_players_per_session=2,
         tcp_port=args.tcp_port,
         ws_path=args.ws_path,
+        max_sessions=args.max_sessions,
     )
     try:
         asyncio.run(server.run())
