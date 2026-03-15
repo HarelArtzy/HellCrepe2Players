@@ -743,8 +743,6 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
             draw_tmx(screen, tmx)
 
         if local_player is not None and session_phase == "playing":
-            chest = world.get("chest", {})
-
             for p_data in players:
                 if int(p_data.get("current_level", -1)) != current_level:
                     continue

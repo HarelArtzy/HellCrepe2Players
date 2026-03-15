@@ -19,7 +19,6 @@ SOCKET_TIMEOUT = 2
 
 WEB_ROOT = "build/web"
 DEFAULT_URL = "index.html"
-UPLOAD_DIR = "upload"
 
 STATUS_CODES = {
     "/400": {
@@ -117,19 +116,6 @@ def build_http_header(status_code, content_type=None, content_length=None, extra
     return "\r\n".join(lines) + "\r\n\r\n"
 
 
-def send_simple_text(client_socket, status, text: str):
-    """
-    Sends a text message
-    :param client_socket:
-    :param status:
-    :param text:
-    :return:
-    """
-    body = text.encode("utf-8")
-    header_ = build_http_header(status, "text/plain; charset=utf-8", len(body))
-    client_socket.sendall(header_.encode() + body)
-
-
 def send_bytes(client_socket, status, data: bytes, content_type: str):
     """
     Sends data to client
@@ -143,36 +129,11 @@ def send_bytes(client_socket, status, data: bytes, content_type: str):
     client_socket.sendall(header_.encode() + data)
 
 
-def parse_query_string(qs: str) -> dict:
-    """
-    Extracts parameters from a query string and returns them as a dict.
-    """
-    params = {}
-    if not qs:
-        return params
-    for pair in qs.split("&"):
-        if "=" not in pair:
-            continue
-        k, v = pair.split("=", 1)
-        params[k] = v
-    return params
-
-
-def safe_basename(name: str) -> str:
-    """
-    Converts a name to a safe base name.
-    :param name:
-    :return:
-    """
-    return os.path.basename(name).strip()
-
-
-def handle_client_request(resource: str, method: str, body_bytes: bytes, client_socket: socket.socket) -> None:
+def handle_client_request(resource: str, method: str, client_socket: socket.socket) -> None:
     """
     Handles all client requests
     :param resource:
     :param method:
-    :param body_bytes:
     :param client_socket:
     :return:
     """
@@ -189,9 +150,9 @@ def handle_client_request(resource: str, method: str, body_bytes: bytes, client_
         return
 
     if "?" in resource:
-        path, qs = resource.split("?", 1)
+        path = resource.split("?", 1)[0]
     else:
-        path, qs = resource, ""
+        path = resource
 
     if path == "/" or path == "":
         relative_path = DEFAULT_URL
@@ -202,12 +163,12 @@ def handle_client_request(resource: str, method: str, body_bytes: bytes, client_
     logging.info(f"Static path: {full_path}")
 
     if not os.path.isfile(full_path):
-        handle_client_request("/404", "GET", b"", client_socket)
+        handle_client_request("/404", "GET", client_socket)
         return
 
     data = get_file_data(full_path)
     if data is None:
-        handle_client_request("/error", "GET", b"", client_socket)
+        handle_client_request("/error", "GET", client_socket)
         return
 
     send_bytes(client_socket, "200 OK", data, get_content_type(full_path))
@@ -220,10 +181,10 @@ def validate_http_request(request: str):
     :return:
     """
     if not request:
-        return False, "", "", {}
+        return False, "", ""
 
     if "\r\n\r\n" not in request:
-        return False, "", "", {}
+        return False, "", ""
 
     head, _ = request.split("\r\n\r\n", 1)
     lines = head.split("\r\n")
@@ -231,21 +192,15 @@ def validate_http_request(request: str):
 
     parts = request_line.split(" ")
     if len(parts) != 3:
-        return False, "", "", {}
+        return False, "", ""
     method, uri, version = parts
 
     if method not in ("GET", "POST"):
-        return False, "", "", {}
+        return False, "", ""
     if version != "HTTP/1.1":
-        return False, "", "", {}
+        return False, "", ""
 
-    headers = {}
-    for line in lines[1:]:
-        if ":" in line:
-            k, v = line.split(":", 1)
-            headers[k.strip().lower()] = v.strip()
-
-    return True, uri, method, headers
+    return True, uri, method
 
 
 def recv_full_request(client_socket: socket.socket) -> tuple[str, bytes]:
@@ -284,7 +239,7 @@ def recv_full_request(client_socket: socket.socket) -> tuple[str, bytes]:
             break
         body += chunk
 
-    return request_text + rest[:0].decode("iso-8859-1", errors="ignore"), body[:content_length]
+    return request_text, body[:content_length]
 
 
 def handle_client(client_socket):
@@ -294,25 +249,23 @@ def handle_client(client_socket):
     :return:
     """
     try:
-        request_text, body_bytes = recv_full_request(client_socket)
+        request_text, _ = recv_full_request(client_socket)
         if not request_text:
             return
 
-        valid_http, resource, method, headers = validate_http_request(request_text)
+        valid_http, resource, method = validate_http_request(request_text)
         if valid_http:
-            handle_client_request(resource, method, body_bytes, client_socket)
+            handle_client_request(resource, method, client_socket)
         else:
-            handle_client_request("/400", "GET", b"", client_socket)
+            handle_client_request("/400", "GET", client_socket)
     except Exception as e:
         logging.exception(f"Error: {e}")
         try:
-            handle_client_request("/error", "GET", b"", client_socket)
+            handle_client_request("/error", "GET", client_socket)
         except Exception as e:
             logging.exception(f"Error: {e}")
 
 def main():
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         server_socket.bind((IP, PORT))

@@ -297,7 +297,6 @@ class Amrany(Enemy):
             return
 
         direction = -1 if player_rect.centerx < self.rect.centerx else 1
-        direction = -1 if player_rect.centerx < self.rect.centerx else 1
         x_offset = (self.rect.width // 2) + (ENEMY_SIZE // 2) + 6
         spawn_x = self.rect.centerx + direction * x_offset
         spawn_y = random.randrange(self.rect.top, self.rect.bottom - ENEMY_SIZE-10)
