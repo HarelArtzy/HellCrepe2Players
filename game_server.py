@@ -713,15 +713,15 @@ class DungeonGameServer:
         return pygame.Rect(chest_rect.x - 16, chest_rect.y, 48, 32)
 
     def step_players(self, dt: float) -> None:
+        if any(inp.restart for inp in self.inputs.values()):
+            for inp in self.inputs.values():
+                inp.restart = False
+            self.reset_players_for_lobby()
+            return
+
         for pid, player in list(self.players.items()):
             inp = self.inputs.get(pid)
             if inp is None:
-                continue
-
-            if inp.restart:
-                player.current_level = STARTING_LVL
-                self.reset_player(player, carry_stats=False)
-                inp.restart = False
                 continue
 
             if player.dead or player.won:
@@ -945,16 +945,29 @@ class DungeonGameServer:
 
     def build_snapshot(self, player_id: int) -> dict:
         player = self.players[player_id]
-        local_level = self.get_or_create_level_state(player.current_level)
+        snapshot_level = player.current_level
+        spectating_player_id = None
+        if player.dead and not player.won:
+            for pid, other in sorted(self.players.items()):
+                if pid == player_id:
+                    continue
+                if not other.dead:
+                    spectating_player_id = pid
+                    snapshot_level = other.current_level
+                    break
+
+        local_level = self.get_or_create_level_state(snapshot_level)
         chest_interaction_rect = self.get_chest_interaction_rect(local_level.chest_rect)
         can_interact_with_chest = (
-            player.hitbox.colliderect(chest_interaction_rect)
+            (not player.dead)
+            and player.current_level == snapshot_level
+            and player.hitbox.colliderect(chest_interaction_rect)
             and player_id not in local_level.chest_claimed_by
         )
 
         players_payload = []
         for pid, other in sorted(self.players.items()):
-            if other.current_level == player.current_level:
+            if other.current_level == snapshot_level:
                 projectiles = [
                     {"x": projectile.x, "y": projectile.y, "radius": projectile.radius}
                     for projectile in other.projectiles
@@ -1008,6 +1021,7 @@ class DungeonGameServer:
             "type": "state",
             "tick": self.tick,
             "you": player_id,
+            "spectating_player_id": spectating_player_id,
             "session": {
                 "connected_players": len(self.players),
                 "required_players": self.max_players,
@@ -1018,7 +1032,7 @@ class DungeonGameServer:
             "level_size": {"w": local_level.width, "h": local_level.height},
             "players": players_payload,
             "world": {
-                "current_level": player.current_level,
+                "current_level": snapshot_level,
                 "chest": {
                     "x": local_level.chest_rect.x,
                     "y": local_level.chest_rect.y,
@@ -1069,7 +1083,7 @@ class DungeonGameServer:
         # Someone left during/after a run: return remaining player(s) to lobby state.
         self.reset_players_for_lobby()
 
-    async def stream_state_to_player(self, player_id: int, writer: asyncio.StreamWriter) -> None:
+    async def stream_state_to_player(self, player_id: int, writer: object) -> None:
         if player_id not in self.players:
             return
         try:
@@ -1088,6 +1102,13 @@ class DungeonGameServer:
             if self.match_started and self.players_connected():
                 self.step_players(tick_dt)
                 self.step_levels(tick_dt)
+                if (
+                    self.match_started
+                    and self.players
+                    and all(p.dead for p in self.players.values())
+                    and all(not p.won for p in self.players.values())
+                ):
+                    self.reset_players_for_lobby()
 
             tasks = [
                 self.stream_state_to_player(player_id, writer)

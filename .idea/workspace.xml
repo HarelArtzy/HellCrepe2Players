@@ -4,8 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="31bf454b-279d-4aff-a5b6-da730738c2b1" name="Changes" comment="2 Players">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    <list default="true" id="31bf454b-279d-4aff-a5b6-da730738c2b1" name="Changes" comment="FIXED WEB">
       <change beforePath="$PROJECT_DIR$/game_server.py" beforeDir="false" afterPath="$PROJECT_DIR$/game_server.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
     </list>
@@ -185,7 +184,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1772192408772</updated>
-      <workItem from="1773564206483" duration="7018000" />
+      <workItem from="1773564206483" duration="8322000" />
     </task>
     <task id="LOCAL-00001" summary="added pancake">
       <option name="closed" value="true" />
@@ -259,7 +258,15 @@
       <option name="project" value="LOCAL" />
       <updated>1773572024317</updated>
     </task>
-    <option name="localTasksCounter" value="10" />
+    <task id="LOCAL-00010" summary="FIXED WEB">
+      <option name="closed" value="true" />
+      <created>1773573352237</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1773573352237</updated>
+    </task>
+    <option name="localTasksCounter" value="11" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -285,10 +292,11 @@
     <MESSAGE value="gi/aura" />
     <MESSAGE value="final boss added" />
     <MESSAGE value="2 Players" />
-    <option name="LAST_COMMIT_MESSAGE" value="2 Players" />
+    <MESSAGE value="FIXED WEB" />
+    <option name="LAST_COMMIT_MESSAGE" value="FIXED WEB" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/HellCrepe2Players$game_server.coverage" NAME="game_server Coverage Results" MODIFIED="1773573152046" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/HellCrepe2Players$game_server.coverage" NAME="game_server Coverage Results" MODIFIED="1773574522618" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/HellCrepe2Players$main.coverage" NAME="main Coverage Results" MODIFIED="1773527151703" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>

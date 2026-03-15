@@ -556,6 +556,9 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
     lobby_ready = False
     lobby_initialized = False
     lobby_owner_id = None
+    pause_menu_open = False
+    pause_menu_index = 0
+    pause_menu_options = ["Resume", "Restart Session", "Quit"]
     running = True
 
     while running:
@@ -566,8 +569,28 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_r and session_phase == "playing":
-                    restart_requested = True
+                if session_phase == "playing":
+                    if pause_menu_open:
+                        if event.key in (pygame.K_UP, pygame.K_w):
+                            pause_menu_index = (pause_menu_index - 1) % len(pause_menu_options)
+                        elif event.key in (pygame.K_DOWN, pygame.K_s):
+                            pause_menu_index = (pause_menu_index + 1) % len(pause_menu_options)
+                        elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                            selected = pause_menu_options[pause_menu_index]
+                            if selected == "Resume":
+                                pause_menu_open = False
+                            elif selected == "Restart Session":
+                                restart_requested = True
+                                pause_menu_open = False
+                            elif selected == "Quit":
+                                running = False
+                        elif event.key == pygame.K_ESCAPE:
+                            pause_menu_open = False
+                        continue
+                    if event.key == pygame.K_ESCAPE:
+                        pause_menu_open = True
+                        pause_menu_index = 0
+                        continue
 
                 if session_phase == "lobby":
                     if event.key == pygame.K_RETURN:
@@ -588,10 +611,12 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
         players: list[dict] = []
         player_id = net_state.get("player_id")
         session: dict = {}
+        spectating_player_id = None
 
         if latest_state is not None:
             players = latest_state.get("players", [])
             session = latest_state.get("session", {})
+            spectating_player_id = latest_state.get("spectating_player_id")
             if player_id is None:
                 player_id = latest_state.get("you")
                 net_state["player_id"] = player_id
@@ -628,19 +653,19 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
                     # Keep local controls inactive outside lobby.
                     lobby_ready = server_ready
 
-                new_level = int(local_player.get("current_level", STARTING_LVL))
-                if new_level != current_level:
-                    maybe_visual = load_visual_level(new_level, visual_cache)
+                world = latest_state.get("world", {})
+                render_level = int(world.get("current_level", local_player.get("current_level", STARTING_LVL)))
+                if render_level != current_level:
+                    maybe_visual = load_visual_level(render_level, visual_cache)
                     if maybe_visual is not None:
                         tmx, base_w, base_h = maybe_visual
                         screen = pygame.Surface((base_w, base_h))
                         scale, off_x, off_y, scaled_w, scaled_h = calc_view(base_w, base_h, WINDOW_W, WINDOW_H)
-                        current_level = new_level
-                world = latest_state.get("world", {})
+                        current_level = render_level
 
                 chest_event_id = int(local_player.get("chest_event_id", 0))
                 if chest_event_id > last_chest_event_id:
-                    chest_event_level = int(local_player.get("chest_event_level", new_level))
+                    chest_event_level = int(local_player.get("chest_event_level", local_player.get("current_level", STARTING_LVL)))
                     cfg = MAP_DICT.get(level_key(chest_event_level), {})
                     msgs = [str(msg) for msg in cfg.get("chest_msg", []) if str(msg).strip()]
                     if msgs:
@@ -653,6 +678,7 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
             chest_overlay_messages = []
             chest_overlay_index = 0
             chest_overlay_wait_release = True
+            pause_menu_open = False
 
         target_w, target_h = (base_w, base_h) if session_phase == "playing" else (UI_W, UI_H)
         if screen.get_width() != target_w or screen.get_height() != target_h:
@@ -697,7 +723,7 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
                         },
                     )
                 else:
-                    input_locked = (session_phase != "playing") or chest_overlay_active
+                    input_locked = (session_phase != "playing") or chest_overlay_active or pause_menu_open
                     input_payload = {
                         "type": "input",
                         "left": bool(keys[pygame.K_a] or keys[pygame.K_LEFT]) and (not input_locked),
@@ -841,10 +867,36 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
 
             if local_player.get("dead", False):
                 if local_player.get("won", False):
-                    msg = "You Won. Press R to restart."
+                    msg = "You Won."
                 else:
-                    msg = "You Died. Press R to restart."
+                    spectating_name = "teammate"
+                    if spectating_player_id is not None:
+                        target = next((p for p in players if int(p.get("id", -1)) == int(spectating_player_id)), None)
+                        if target is not None:
+                            spectating_name = normalize_username(str(target.get("username", "")), f"P{spectating_player_id}")
+                    msg = f"You Died.\nSpectating {spectating_name}.\nWaiting for other player to die."
                 render_center_text(screen, overlay_font, msg, (255, 255, 255))
+
+            if pause_menu_open:
+                shade = pygame.Surface((base_w, base_h), pygame.SRCALPHA)
+                shade.fill((0, 0, 0, 170))
+                screen.blit(shade, (0, 0))
+
+                menu_w = min(420, base_w - 40)
+                menu_h = 220
+                menu_x = (base_w - menu_w) // 2
+                menu_y = (base_h - menu_h) // 2
+                panel = pygame.Rect(menu_x, menu_y, menu_w, menu_h)
+                pygame.draw.rect(screen, (25, 25, 35), panel, border_radius=10)
+                pygame.draw.rect(screen, (100, 100, 140), panel, 2, border_radius=10)
+
+                title = overlay_font.render("Paused", True, (240, 240, 250))
+                screen.blit(title, title.get_rect(center=(base_w // 2, menu_y + 34)))
+
+                for idx, option in enumerate(pause_menu_options):
+                    color = (255, 220, 140) if idx == pause_menu_index else (220, 220, 230)
+                    text = info_font.render(option, True, color)
+                    screen.blit(text, text.get_rect(center=(base_w // 2, menu_y + 86 + idx * 34)))
 
             if chest_overlay_active:
                 shade = pygame.Surface((base_w, base_h), pygame.SRCALPHA)
