@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import inspect
 import json
 import random
 import time
@@ -11,10 +10,8 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
-from urllib.parse import parse_qs, urlsplit
 
 import pygame
-import websockets
 
 from settings import (
     BASE_HEARTS,
@@ -45,18 +42,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 def level_key(level: int) -> str:
     return f"lvl{level}"
-
-
-def resolve_ws_request_path(websocket: object, ws_path: str, explicit_path: str | None = None) -> str:
-    req_path = explicit_path
-    if req_path is None:
-        req_path = getattr(websocket, "path", None)
-    if req_path is None:
-        request = getattr(websocket, "request", None)
-        req_path = getattr(request, "path", None) if request is not None else None
-    if req_path is None:
-        return ws_path
-    return str(req_path)
 
 
 def move_and_collide(
@@ -498,20 +483,16 @@ class DungeonGameServer:
         host: str,
         port: int,
         max_players: int = 2,
-        tcp_port: int = 0,
-        ws_path: str = "/ws",
         session_id: str = "default",
     ):
         self.host = host
         self.port = port
-        self.tcp_port = tcp_port
-        self.ws_path = ws_path if ws_path.startswith("/") else f"/{ws_path}"
         self.max_players = max_players
         self.session_id = session_id
 
         self.players: dict[int, SimPlayer] = {}
         self.inputs: dict[int, PlayerInput] = {}
-        self.writers: dict[int, object] = {}
+        self.writers: dict[int, asyncio.StreamWriter] = {}
 
         self.level_cache: dict[int, LevelGeometry] = {}
         self.levels: dict[int, SharedLevelState] = {}
@@ -1071,13 +1052,10 @@ class DungeonGameServer:
             },
         }
 
-    async def send_json(self, conn: object, payload: dict) -> None:
+    async def send_json(self, conn: asyncio.StreamWriter, payload: dict) -> None:
         raw = json.dumps(payload, separators=(",", ":"))
-        if isinstance(conn, asyncio.StreamWriter):
-            conn.write((raw + "\n").encode("utf-8"))
-            await conn.drain()
-            return
-        await conn.send(raw)
+        conn.write((raw + "\n").encode("utf-8"))
+        await conn.drain()
 
     async def remove_player(self, player_id: int) -> None:
         self.players.pop(player_id, None)
@@ -1085,18 +1063,8 @@ class DungeonGameServer:
         conn = self.writers.pop(player_id, None)
         if conn is not None:
             with suppress(Exception):
-                if isinstance(conn, asyncio.StreamWriter):
-                    conn.close()
-                    await conn.wait_closed()
-                else:
-                    close_result = conn.close()
-                    if inspect.isawaitable(close_result):
-                        await close_result
-                    wait_closed = getattr(conn, "wait_closed", None)
-                    if callable(wait_closed):
-                        maybe_wait = wait_closed()
-                        if inspect.isawaitable(maybe_wait):
-                            await maybe_wait
+                conn.close()
+                await conn.wait_closed()
 
         if not self.players:
             self.match_started = False
@@ -1106,7 +1074,7 @@ class DungeonGameServer:
         # Someone left during/after a run: return remaining player(s) to lobby state.
         self.reset_players_for_lobby()
 
-    async def stream_state_to_player(self, player_id: int, writer: object) -> None:
+    async def stream_state_to_player(self, player_id: int, writer: asyncio.StreamWriter) -> None:
         if player_id not in self.players:
             return
         try:
@@ -1205,98 +1173,18 @@ class DungeonGameServer:
         finally:
             await self.remove_player(player_id)
 
-    async def handle_ws_client(self, websocket, path=None) -> None:
-        req_path = resolve_ws_request_path(websocket, self.ws_path, explicit_path=path)
-        parsed = urlsplit(req_path)
-        if parsed.path != self.ws_path:
-            with suppress(Exception):
-                await websocket.close(code=1008, reason=f"Invalid path: expected {self.ws_path}")
-            return
-
-        if not self.players:
-            self.match_started = False
-            self.reset_dynamic_world()
-
-        player_id = self.next_free_player_id()
-        if player_id is None:
-            with suppress(Exception):
-                await self.send_json(websocket, {"type": "error", "message": "Server is full (max 2 players)."})
-                await websocket.close()
-            return
-
-        self.players[player_id] = self.create_player(player_id)
-        self.writers[player_id] = websocket
-        self.reset_players_for_lobby()
-
-        with suppress(Exception):
-            await self.send_json(
-                websocket,
-                {
-                    "type": "welcome",
-                    "player_id": player_id,
-                    "tick_rate": FPS,
-                    "max_players": self.max_players,
-                    "transport": "ws",
-                    "session_id": self.session_id,
-                },
-            )
-
-        try:
-            invalid_packets = 0
-            async for payload in websocket:
-                if isinstance(payload, bytes):
-                    try:
-                        decoded = payload.decode("utf-8")
-                    except UnicodeDecodeError:
-                        invalid_packets += 1
-                        if invalid_packets >= 3:
-                            break
-                        continue
-                else:
-                    decoded = str(payload)
-
-                try:
-                    msg = json.loads(decoded)
-                except json.JSONDecodeError:
-                    invalid_packets += 1
-                    if invalid_packets >= 3:
-                        break
-                    continue
-
-                invalid_packets = 0
-                msg_type = msg.get("type")
-                if msg_type == "input":
-                    self.apply_client_message(player_id, msg)
-                elif msg_type == "lobby":
-                    self.apply_lobby_message(player_id, msg)
-        finally:
-            await self.remove_player(player_id)
-
     async def run(self) -> None:
-        ws_server = await websockets.serve(self.handle_ws_client, self.host, self.port)
-        ws_targets = ", ".join(str(sock.getsockname()) for sock in (ws_server.sockets or []))
-        print(f"Dungeon WS server listening on {ws_targets}{self.ws_path}")
-
-        tcp_server = None
-        if self.tcp_port > 0:
-            tcp_server = await asyncio.start_server(self.handle_client, self.host, self.tcp_port)
-            tcp_targets = ", ".join(str(sock.getsockname()) for sock in (tcp_server.sockets or []))
-            print(f"Dungeon TCP server listening on {tcp_targets}")
+        tcp_server = await asyncio.start_server(self.handle_client, self.host, self.port)
+        tcp_targets = ", ".join(str(sock.getsockname()) for sock in (tcp_server.sockets or []))
+        print(f"Dungeon TCP server listening on {tcp_targets}")
 
         tick_task = asyncio.create_task(self.game_loop())
         try:
-            awaitables = [ws_server.serve_forever()]
-            if tcp_server is not None:
-                awaitables.append(tcp_server.serve_forever())
-            await asyncio.gather(*awaitables)
+            await tcp_server.serve_forever()
         finally:
-            ws_server.close()
+            tcp_server.close()
             with suppress(Exception):
-                await ws_server.wait_closed()
-            if tcp_server is not None:
-                tcp_server.close()
-                with suppress(Exception):
-                    await tcp_server.wait_closed()
+                await tcp_server.wait_closed()
             tick_task.cancel()
             with suppress(asyncio.CancelledError):
                 await tick_task
@@ -1308,14 +1196,10 @@ class MultiSessionDungeonServer:
         host: str,
         port: int,
         max_players_per_session: int = 2,
-        tcp_port: int = 0,
-        ws_path: str = "/ws",
         max_sessions: int = 0,
     ):
         self.host = host
         self.port = port
-        self.tcp_port = tcp_port
-        self.ws_path = ws_path if ws_path.startswith("/") else f"/{ws_path}"
         self.max_players_per_session = max_players_per_session
         self.max_sessions = max(0, int(max_sessions))
 
@@ -1323,13 +1207,10 @@ class MultiSessionDungeonServer:
         self.session_tasks: dict[str, asyncio.Task] = {}
         self.next_session_num = 1
 
-    async def send_json(self, conn: object, payload: dict) -> None:
+    async def send_json(self, conn: asyncio.StreamWriter, payload: dict) -> None:
         raw = json.dumps(payload, separators=(",", ":"))
-        if isinstance(conn, asyncio.StreamWriter):
-            conn.write((raw + "\n").encode("utf-8"))
-            await conn.drain()
-            return
-        await conn.send(raw)
+        conn.write((raw + "\n").encode("utf-8"))
+        await conn.drain()
 
     def normalize_session_id(self, raw: str | None) -> str | None:
         if raw is None:
@@ -1359,8 +1240,6 @@ class MultiSessionDungeonServer:
             self.host,
             self.port,
             max_players=self.max_players_per_session,
-            tcp_port=0,
-            ws_path=self.ws_path,
             session_id=session_id,
         )
         self.sessions[session_id] = session
@@ -1399,20 +1278,10 @@ class MultiSessionDungeonServer:
         session = self.create_session(sid)
         return sid, session, None
 
-    async def close_connection(self, conn: object) -> None:
+    async def close_connection(self, conn: asyncio.StreamWriter) -> None:
         with suppress(Exception):
-            if isinstance(conn, asyncio.StreamWriter):
-                conn.close()
-                await conn.wait_closed()
-            else:
-                close_result = conn.close()
-                if inspect.isawaitable(close_result):
-                    await close_result
-                wait_closed = getattr(conn, "wait_closed", None)
-                if callable(wait_closed):
-                    maybe_wait = wait_closed()
-                    if inspect.isawaitable(maybe_wait):
-                        await maybe_wait
+            conn.close()
+            await conn.wait_closed()
 
     async def cleanup_session_if_empty(self, session_id: str) -> None:
         session = self.sessions.get(session_id)
@@ -1431,9 +1300,8 @@ class MultiSessionDungeonServer:
 
     async def register_player(
         self,
-        conn: object,
+        conn: asyncio.StreamWriter,
         requested_session: str | None,
-        transport: str,
     ) -> tuple[str | None, DungeonGameServer | None, int | None]:
         session_id, session, pick_error = self.pick_session(requested_session)
         if session is None or session_id is None:
@@ -1460,8 +1328,6 @@ class MultiSessionDungeonServer:
             "max_players": session.max_players,
             "session_id": session_id,
         }
-        if transport == "ws":
-            welcome["transport"] = "ws"
 
         try:
             await self.send_json(conn, welcome)
@@ -1484,7 +1350,7 @@ class MultiSessionDungeonServer:
                 await self.cleanup_session_if_empty(session_id)
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        session_id, session, player_id = await self.register_player(writer, requested_session=None, transport="tcp")
+        session_id, session, player_id = await self.register_player(writer, requested_session=None)
         if session is None or player_id is None or session_id is None:
             return
 
@@ -1521,81 +1387,19 @@ class MultiSessionDungeonServer:
             await session.remove_player(player_id)
             await self.cleanup_session_if_empty(session_id)
 
-    async def handle_ws_client(self, websocket, path=None) -> None:
-        req_path = resolve_ws_request_path(websocket, self.ws_path, explicit_path=path)
-        parsed = urlsplit(req_path)
-        if parsed.path != self.ws_path:
-            with suppress(Exception):
-                await websocket.close(code=1008, reason=f"Invalid path: expected {self.ws_path}")
-            return
-
-        requested_session = parse_qs(parsed.query).get("session", [None])[0]
-        session_id, session, player_id = await self.register_player(
-            websocket,
-            requested_session=requested_session,
-            transport="ws",
-        )
-        if session is None or player_id is None or session_id is None:
-            return
-
-        try:
-            invalid_packets = 0
-            async for payload in websocket:
-                if isinstance(payload, bytes):
-                    try:
-                        decoded = payload.decode("utf-8")
-                    except UnicodeDecodeError:
-                        invalid_packets += 1
-                        if invalid_packets >= 3:
-                            break
-                        continue
-                else:
-                    decoded = str(payload)
-
-                try:
-                    msg = json.loads(decoded)
-                except json.JSONDecodeError:
-                    invalid_packets += 1
-                    if invalid_packets >= 3:
-                        break
-                    continue
-
-                invalid_packets = 0
-                msg_type = msg.get("type")
-                if msg_type == "input":
-                    session.apply_client_message(player_id, msg)
-                elif msg_type == "lobby":
-                    session.apply_lobby_message(player_id, msg)
-        finally:
-            await session.remove_player(player_id)
-            await self.cleanup_session_if_empty(session_id)
-
     async def run(self) -> None:
-        ws_server = await websockets.serve(self.handle_ws_client, self.host, self.port)
-        ws_targets = ", ".join(str(sock.getsockname()) for sock in (ws_server.sockets or []))
-        print(f"Dungeon WS server listening on {ws_targets}{self.ws_path}")
+        tcp_server = await asyncio.start_server(self.handle_client, self.host, self.port)
+        tcp_targets = ", ".join(str(sock.getsockname()) for sock in (tcp_server.sockets or []))
+        print(f"Dungeon TCP server listening on {tcp_targets}")
         print("Matchmaking mode: multiple 2-player sessions enabled")
-
-        tcp_server = None
-        if self.tcp_port > 0:
-            tcp_server = await asyncio.start_server(self.handle_client, self.host, self.tcp_port)
-            tcp_targets = ", ".join(str(sock.getsockname()) for sock in (tcp_server.sockets or []))
-            print(f"Dungeon TCP server listening on {tcp_targets}")
 
         reaper_task = asyncio.create_task(self.session_reaper_loop(), name="session-reaper")
         try:
-            awaitables = [ws_server.serve_forever()]
-            if tcp_server is not None:
-                awaitables.append(tcp_server.serve_forever())
-            await asyncio.gather(*awaitables)
+            await tcp_server.serve_forever()
         finally:
-            ws_server.close()
+            tcp_server.close()
             with suppress(Exception):
-                await ws_server.wait_closed()
-            if tcp_server is not None:
-                tcp_server.close()
-                with suppress(Exception):
-                    await tcp_server.wait_closed()
+                await tcp_server.wait_closed()
 
             reaper_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -1619,9 +1423,7 @@ class MultiSessionDungeonServer:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="HellCrepe multiplayer game server")
     parser.add_argument("--host", default="0.0.0.0", help="Host/IP to bind")
-    parser.add_argument("--port", type=int, default=9000, help="WebSocket port")
-    parser.add_argument("--ws-path", default="/ws", help="WebSocket path")
-    parser.add_argument("--tcp-port", type=int, default=0, help="Optional legacy TCP port (0 disables)")
+    parser.add_argument("--port", type=int, default=9000, help="TCP port")
     parser.add_argument(
         "--max-sessions",
         type=int,
@@ -1637,8 +1439,6 @@ if __name__ == "__main__":
         args.host,
         args.port,
         max_players_per_session=2,
-        tcp_port=args.tcp_port,
-        ws_path=args.ws_path,
         max_sessions=args.max_sessions,
     )
     try:

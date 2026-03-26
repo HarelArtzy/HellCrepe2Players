@@ -3,19 +3,15 @@
 # dependencies = [
 #   "pygame-ce",
 #   "pytmx",
-#   "websockets",
 # ]
 # ///
 
 import argparse
-import asyncio
 import json
-import secrets
-import sys
+import socket
 import time
 from contextlib import suppress
 from pathlib import Path
-from urllib.parse import quote
 
 import pygame
 
@@ -34,275 +30,99 @@ def level_key(level: int) -> str:
     return f"lvl{level}"
 
 
-def is_web_runtime() -> bool:
-    return sys.platform in ("emscripten", "wasi")
-
-
-def get_browser_location() -> tuple[str, str] | None:
-    try:
-        import js  # type: ignore
-        protocol = str(js.window.location.protocol)
-        hostname = str(js.window.location.hostname)
-        return protocol, hostname
-    except Exception:
-        pass
-    try:
-        from platform import window  # type: ignore
-        protocol = str(window.location.protocol)
-        hostname = str(window.location.hostname)
-        return protocol, hostname
-    except Exception:
-        return None
-
-
-def build_ws_url(host: str, port: int, ws_path: str, session_id: str | None = None) -> str:
-    path = ws_path if ws_path.startswith("/") else f"/{ws_path}"
-    if session_id:
-        separator = "&" if "?" in path else "?"
-        path = f"{path}{separator}session={quote(session_id)}"
-
-    if host.startswith("ws://") or host.startswith("wss://"):
-        return host if host.endswith(path) else f"{host}{path}"
-
-    scheme = "ws"
-    ws_host = host
-    if is_web_runtime():
-        loc = get_browser_location()
-        if loc is not None:
-            protocol, browser_host = loc
-            scheme = "wss" if protocol == "https:" else "ws"
-            if host in ("127.0.0.1", "0.0.0.0", "localhost", ""):
-                ws_host = browser_host
-
-    return f"{scheme}://{ws_host}:{port}{path}"
-
-
-def _decode_ws_payload(payload: object) -> str:
-    if isinstance(payload, bytes):
-        return payload.decode("utf-8", errors="replace")
-    return str(payload)
-
-
-class BrowserWebSocketClient:
-    def __init__(self, url: str):
-        self.url = url
-        self.queue: asyncio.Queue[str] = asyncio.Queue()
-        self.open_event = asyncio.Event()
-        self.close_event = asyncio.Event()
-        self.error: str | None = None
+class TcpJsonConnection:
+    def __init__(self, sock: socket.socket):
+        self.sock = sock
+        self.sock.setblocking(False)
         self.closed = False
-        self._proxies: list[object] = []
+        self._recv_buffer = b""
+        self._send_buffer = b""
 
-        ws_ctor = None
-        try:
-            import js  # type: ignore
-            ws_ctor = js.WebSocket
-        except Exception:
+    def queue_json(self, payload: dict) -> None:
+        self._send_buffer += (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+
+    def flush(self) -> None:
+        while self._send_buffer and not self.closed:
             try:
-                from platform import window  # type: ignore
-                ws_ctor = window.WebSocket
-            except Exception:
-                ws_ctor = None
+                sent = self.sock.send(self._send_buffer)
+            except (BlockingIOError, InterruptedError):
+                break
+            except OSError as exc:
+                self.closed = True
+                raise ConnectionError(str(exc)) from exc
 
-        if ws_ctor is None:
-            raise RuntimeError("Browser WebSocket API not available.")
+            if sent <= 0:
+                self.closed = True
+                raise ConnectionError("Socket closed while sending.")
+            self._send_buffer = self._send_buffer[sent:]
 
-        self.ws = None
-        ctor_errors: list[str] = []
+    def poll_messages(self) -> list[str]:
+        messages: list[str] = []
 
-        # 1) Direct `.new(...)` on explicit browser globals.
-        try:
-            import js  # type: ignore
+        while not self.closed:
             try:
-                self.ws = js.WebSocket.new(url)
-            except Exception as exc:
-                ctor_errors.append(f"js.WebSocket.new: {exc}")
-            if self.ws is None:
-                try:
-                    self.ws = js.window.WebSocket.new(url)
-                except Exception as exc:
-                    ctor_errors.append(f"js.window.WebSocket.new: {exc}")
-            if self.ws is None:
-                try:
-                    self.ws = js.Reflect.construct(js.WebSocket, js.Array.new(url))
-                except Exception as exc:
-                    ctor_errors.append(f"Reflect.construct(js.WebSocket,...): {exc}")
-            if self.ws is None:
-                try:
-                    self.ws = js.window.eval(f"new WebSocket({json.dumps(url)})")
-                except Exception as exc:
-                    ctor_errors.append(f"js.window.eval(new WebSocket): {exc}")
-        except Exception as exc:
-            ctor_errors.append(f"import js: {exc}")
+                chunk = self.sock.recv(4096)
+            except (BlockingIOError, InterruptedError):
+                break
+            except OSError as exc:
+                self.closed = True
+                raise ConnectionError(str(exc)) from exc
 
-        # 2) platform.window variants used by some pygbag builds.
-        if self.ws is None:
-            try:
-                from platform import window  # type: ignore
-                try:
-                    self.ws = window.WebSocket.new(url)
-                except Exception as exc:
-                    ctor_errors.append(f"window.WebSocket.new: {exc}")
-                if self.ws is None:
-                    try:
-                        self.ws = window.eval(f"new WebSocket({json.dumps(url)})")
-                    except Exception as exc:
-                        ctor_errors.append(f"window.eval(new WebSocket): {exc}")
-            except Exception as exc:
-                ctor_errors.append(f"import platform.window: {exc}")
+            if not chunk:
+                self.closed = True
+                break
 
-        # 3) Legacy fallback from constructor reference (may still fail on strict wrappers).
-        if self.ws is None:
-            try:
-                self.ws = ws_ctor.new(url)
-            except Exception as exc:
-                ctor_errors.append(f"ws_ctor.new: {exc}")
-                try:
-                    self.ws = ws_ctor(url)
-                except Exception as exc2:
-                    ctor_errors.append(f"ws_ctor(...): {exc2}")
+            self._recv_buffer += chunk
 
-        if self.ws is None:
-            summary = "; ".join(ctor_errors[-4:])
-            raise RuntimeError(f"WebSocket constructor failed: {summary}")
-
-        def wrap_callback(cb):
-            try:
-                from pyodide.ffi import create_proxy  # type: ignore
-                proxy = create_proxy(cb)
-                self._proxies.append(proxy)
-                return proxy
-            except Exception:
-                return cb
-
-        def on_open(_evt=None):
-            self.open_event.set()
-
-        def on_message(evt):
-            data = getattr(evt, "data", "")
-            try:
-                data = data.to_py()
-            except Exception:
-                pass
-            self.queue.put_nowait(str(data))
-
-        def on_error(_evt=None):
-            self.error = "WebSocket connection error."
-            self.open_event.set()
-
-        def on_close(_evt=None):
-            self.closed = True
-            self.close_event.set()
-            self.open_event.set()
-
-        open_cb = wrap_callback(on_open)
-        message_cb = wrap_callback(on_message)
-        error_cb = wrap_callback(on_error)
-        close_cb = wrap_callback(on_close)
-
-        try:
-            self.ws.addEventListener("open", open_cb)
-            self.ws.addEventListener("message", message_cb)
-            self.ws.addEventListener("error", error_cb)
-            self.ws.addEventListener("close", close_cb)
-        except Exception:
-            self.ws.onopen = open_cb
-            self.ws.onmessage = message_cb
-            self.ws.onerror = error_cb
-            self.ws.onclose = close_cb
-
-    async def wait_open(self, timeout_s: float) -> str | None:
-        try:
-            await asyncio.wait_for(self.open_event.wait(), timeout=timeout_s)
-        except asyncio.TimeoutError:
-            return f"Timeout after {timeout_s:.1f}s"
-
-        ready_state = int(getattr(self.ws, "readyState", -1))
-        if ready_state == 1:
-            return None
-        return self.error or "WebSocket did not open."
-
-    async def recv(self) -> str | None:
         while True:
-            if self.closed and self.queue.empty():
-                return None
-            try:
-                return await asyncio.wait_for(self.queue.get(), timeout=0.25)
-            except asyncio.TimeoutError:
-                await asyncio.sleep(0)
+            newline_idx = self._recv_buffer.find(b"\n")
+            if newline_idx < 0:
+                break
+            line = self._recv_buffer[:newline_idx]
+            self._recv_buffer = self._recv_buffer[newline_idx + 1 :]
+            if not line:
+                continue
+            messages.append(line.decode("utf-8", errors="replace"))
 
-    async def send(self, text: str) -> None:
-        if self.closed:
-            raise ConnectionError("WebSocket is closed")
-        self.ws.send(text)
+        return messages
 
-    async def close(self) -> None:
-        if self.closed:
+    def close(self) -> None:
+        if self.closed and self.sock.fileno() < 0:
             return
-        with suppress(Exception):
-            self.ws.close()
+        with suppress(OSError):
+            self.sock.shutdown(socket.SHUT_RDWR)
+        with suppress(OSError):
+            self.sock.close()
         self.closed = True
 
-    async def wait_closed(self) -> None:
-        with suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(self.close_event.wait(), timeout=1.0)
+
+def apply_network_message(msg: dict, net_state: dict) -> None:
+    msg_type = msg.get("type")
+    if msg_type == "welcome":
+        net_state["player_id"] = msg.get("player_id")
+        net_state["session_id"] = msg.get("session_id")
+    elif msg_type == "state":
+        net_state["latest_state"] = msg
+    elif msg_type == "error":
+        net_state["error"] = msg.get("message", "Server error.")
 
 
-async def send_json(conn: object, payload: dict) -> None:
-    raw = json.dumps(payload, separators=(",", ":"))
-    if isinstance(conn, asyncio.StreamWriter):
-        conn.write((raw + "\n").encode("utf-8"))
-        await conn.drain()
+def poll_network_messages(conn: TcpJsonConnection, net_state: dict) -> None:
+    try:
+        lines = conn.poll_messages()
+    except ConnectionError:
+        net_state["error"] = "Disconnected from server."
         return
-    await conn.send(raw)
 
-
-async def read_network_messages(reader: asyncio.StreamReader, net_state: dict) -> None:
-    while True:
-        line = await reader.readline()
-        if not line:
-            net_state["error"] = "Disconnected from server."
-            return
+    for line in lines:
         try:
-            msg = json.loads(line.decode("utf-8"))
+            msg = json.loads(line)
         except json.JSONDecodeError:
             continue
+        apply_network_message(msg, net_state)
 
-        msg_type = msg.get("type")
-        if msg_type == "welcome":
-            net_state["player_id"] = msg.get("player_id")
-            net_state["session_id"] = msg.get("session_id")
-        elif msg_type == "state":
-            net_state["latest_state"] = msg
-        elif msg_type == "error":
-            net_state["error"] = msg.get("message", "Server error.")
-
-
-async def read_network_messages_ws(ws_conn: object, net_state: dict) -> None:
-    while True:
-        try:
-            payload = await ws_conn.recv()
-        except Exception:
-            net_state["error"] = "Disconnected from server."
-            return
-
-        if payload is None:
-            net_state["error"] = "Disconnected from server."
-            return
-
-        try:
-            msg = json.loads(_decode_ws_payload(payload))
-        except json.JSONDecodeError:
-            continue
-
-        msg_type = msg.get("type")
-        if msg_type == "welcome":
-            net_state["player_id"] = msg.get("player_id")
-            net_state["session_id"] = msg.get("session_id")
-        elif msg_type == "state":
-            net_state["latest_state"] = msg
-        elif msg_type == "error":
-            net_state["error"] = msg.get("message", "Server error.")
+    if conn.closed and net_state.get("error") is None:
+        net_state["error"] = "Disconnected from server."
 
 
 def load_visual_level(level: int, cache: dict[int, tuple]) -> tuple | None:
@@ -344,7 +164,7 @@ def present_scaled(window: pygame.Surface, surface: pygame.Surface) -> None:
     pygame.display.flip()
 
 
-async def show_connection_error_screen(
+def show_connection_error_screen(
     window: pygame.Surface,
     title_font: pygame.font.Font,
     body_font: pygame.font.Font,
@@ -352,6 +172,7 @@ async def show_connection_error_screen(
     port: int,
     reason: str,
 ) -> None:
+    clock = pygame.time.Clock()
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -373,69 +194,36 @@ async def show_connection_error_screen(
         surface.blit(hint, hint.get_rect(center=(UI_W // 2, UI_H // 2 + 80)))
 
         present_scaled(window, surface)
-        await asyncio.sleep(0)
+        clock.tick(60)
 
 
-async def connect_with_feedback(
+def connect_with_feedback(
     window: pygame.Surface,
     title_font: pygame.font.Font,
     body_font: pygame.font.Font,
     host: str,
     port: int,
-    transport: str,
-    ws_path: str,
-    session_id: str | None = None,
     timeout_s: float = 8.0,
-) -> tuple[object | None, object | None, str | None, str]:
-    loop = asyncio.get_running_loop()
-    if transport == "ws":
-        endpoint = build_ws_url(host, port, ws_path, session_id=session_id)
-        if is_web_runtime():
-            try:
-                browser_ws = BrowserWebSocketClient(endpoint)
-            except Exception as exc:
-                return None, None, f"{endpoint} | {exc.__class__.__name__}: {exc}", "ws"
-            connect_task = asyncio.create_task(browser_ws.wait_open(timeout_s))
-        else:
-            try:
-                import websockets
-            except Exception as exc:
-                return None, None, f"{endpoint} | websockets import failed: {exc}", "ws"
-            connect_task = asyncio.create_task(websockets.connect(endpoint))
-    else:
-        endpoint = f"{host}:{port}"
-        connect_task = asyncio.create_task(asyncio.open_connection(host, port))
-    started = loop.time()
-
+) -> tuple[TcpJsonConnection | None, str | None]:
+    endpoint = f"{host}:{port}"
+    started = time.perf_counter()
+    last_error: OSError | None = None
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                connect_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await connect_task
-                return None, None, "Connection cancelled by user.", transport
+                return None, "Connection cancelled by user."
 
-        if connect_task.done():
-            try:
-                if transport == "ws":
-                    if is_web_runtime():
-                        err = connect_task.result()
-                        if err is not None:
-                            return None, None, f"{endpoint} | {err}", "ws"
-                        return None, browser_ws, None, "ws"
-                    ws_conn = connect_task.result()
-                    return None, ws_conn, None, "ws"
-                reader, writer = connect_task.result()
-                return reader, writer, None, "tcp"
-            except Exception as exc:
-                return None, None, f"{endpoint} | {exc.__class__.__name__}: {exc}", transport
-
-        elapsed = loop.time() - started
+        elapsed = time.perf_counter() - started
         if elapsed >= timeout_s:
-            connect_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await connect_task
-            return None, None, f"{endpoint} | Timeout after {timeout_s:.1f}s", transport
+            if last_error is None:
+                return None, f"{endpoint} | Timeout after {timeout_s:.1f}s"
+            return None, f"{endpoint} | {last_error.__class__.__name__}: {last_error}"
+
+        try:
+            sock = socket.create_connection((host, port), timeout=0.35)
+            return TcpJsonConnection(sock), None
+        except OSError as exc:
+            last_error = exc
 
         dots = "." * (int(elapsed * 3) % 4)
         surface = pygame.Surface((UI_W, UI_H))
@@ -444,7 +232,7 @@ async def connect_with_feedback(
         elapsed_text = body_font.render(f"Elapsed: {elapsed:.1f}s", True, (180, 180, 195))
         surface.blit(elapsed_text, elapsed_text.get_rect(center=(UI_W // 2, UI_H // 2 + 62)))
         present_scaled(window, surface)
-        await asyncio.sleep(0.05)
+        pygame.time.wait(50)
 
 
 def make_enemy_sprite(enemy_type: str, x: int, y: int):
@@ -462,197 +250,6 @@ def make_enemy_sprite(enemy_type: str, x: int, y: int):
 def normalize_username(raw: str, fallback: str) -> str:
     cleaned = raw.strip()
     return cleaned[:20] if cleaned else fallback
-
-
-def sanitize_session_id(raw: str) -> str:
-    cleaned = "".join(ch for ch in raw if ch.isalnum() or ch in ("-", "_"))
-    return cleaned[:32]
-
-
-def generate_session_id() -> str:
-    alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
-    try:
-        return "".join(secrets.choice(alphabet) for _ in range(6))
-    except Exception:
-        # Fallback keeps IDs changing even if secure randomness isn't available.
-        mixed = f"{time.time_ns()}-{time.perf_counter_ns()}"
-        state = abs(hash(mixed))
-        chars: list[str] = []
-        for _ in range(6):
-            state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
-            chars.append(alphabet[state % len(alphabet)])
-        return "".join(chars)
-
-
-def copy_text_to_clipboard(text: str) -> bool:
-    if not text:
-        return False
-
-    if is_web_runtime():
-        try:
-            import js  # type: ignore
-
-            navigator = getattr(js, "navigator", None)
-            clipboard = getattr(navigator, "clipboard", None) if navigator is not None else None
-            if clipboard is not None and hasattr(clipboard, "writeText"):
-                clipboard.writeText(text)
-                return True
-        except Exception:
-            pass
-
-    try:
-        if not pygame.scrap.get_init():
-            pygame.scrap.init()
-        pygame.scrap.put(pygame.SCRAP_TEXT, text.encode("utf-8"))
-        return True
-    except Exception:
-        return False
-
-
-async def choose_matchmaking_mode(
-    window: pygame.Surface,
-    title_font: pygame.font.Font,
-    body_font: pygame.font.Font,
-    small_font: pygame.font.Font,
-    transport: str,
-) -> tuple[str, str | None] | None:
-    options = [
-        ("random", "Queue Randomly"),
-        ("host", "Host Private Session"),
-        ("join", "Join by Session ID"),
-    ]
-    selected_idx = 0
-    view = "menu"
-    host_session_id = generate_session_id()
-    join_text = ""
-    join_error = ""
-    transport_error = ""
-    host_feedback = ""
-    host_feedback_color = (170, 170, 190)
-    host_feedback_until_ms = 0
-
-    while True:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return None
-
-            if event.type != pygame.KEYDOWN:
-                continue
-
-            if view == "menu":
-                if event.key in (pygame.K_UP, pygame.K_w):
-                    selected_idx = (selected_idx - 1) % len(options)
-                elif event.key in (pygame.K_DOWN, pygame.K_s):
-                    selected_idx = (selected_idx + 1) % len(options)
-                elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    selected_mode = options[selected_idx][0]
-                    if selected_mode == "random":
-                        return "random", None
-                    if transport != "ws":
-                        transport_error = "Host/Join requires WebSocket transport."
-                        continue
-                    if selected_mode == "host":
-                        host_session_id = generate_session_id()
-                        view = "host"
-                    elif selected_mode == "join":
-                        join_error = ""
-                        view = "join"
-                elif event.key == pygame.K_ESCAPE:
-                    return None
-
-            elif view == "host":
-                if event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    return "host", host_session_id
-                if event.key == pygame.K_r:
-                    host_session_id = generate_session_id()
-                    host_feedback = ""
-                elif event.key == pygame.K_c:
-                    copied = copy_text_to_clipboard(host_session_id)
-                    if copied:
-                        host_feedback = "Session ID copied to clipboard."
-                        host_feedback_color = (130, 230, 150)
-                    else:
-                        host_feedback = "Copy failed on this platform."
-                        host_feedback_color = (255, 130, 130)
-                    host_feedback_until_ms = pygame.time.get_ticks() + 2200
-                elif event.key == pygame.K_ESCAPE:
-                    view = "menu"
-
-            elif view == "join":
-                if event.key == pygame.K_ESCAPE:
-                    view = "menu"
-                    join_error = ""
-                elif event.key == pygame.K_BACKSPACE:
-                    join_text = join_text[:-1]
-                elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    cleaned = sanitize_session_id(join_text.strip())
-                    if cleaned:
-                        return "join", cleaned
-                    join_error = "Please enter a valid session ID."
-                elif event.unicode and event.unicode.isprintable() and len(join_text) < 32:
-                    join_text += event.unicode
-                    join_error = ""
-
-        surface = pygame.Surface((UI_W, UI_H))
-        surface.fill((11, 11, 16))
-
-        if view == "menu":
-            title = title_font.render("Choose Match Type", True, (240, 240, 245))
-            surface.blit(title, title.get_rect(center=(UI_W // 2, 110)))
-
-            hint = small_font.render("Arrow keys + Enter", True, (170, 170, 190))
-            surface.blit(hint, hint.get_rect(center=(UI_W // 2, 150)))
-
-            for idx, (_, label) in enumerate(options):
-                color = (255, 220, 130) if idx == selected_idx else (220, 220, 230)
-                option_text = body_font.render(label, True, color)
-                surface.blit(option_text, option_text.get_rect(center=(UI_W // 2, 255 + idx * 70)))
-
-            if transport_error:
-                err = small_font.render(transport_error, True, (255, 130, 130))
-                surface.blit(err, err.get_rect(center=(UI_W // 2, UI_H - 90)))
-
-        elif view == "host":
-            title = title_font.render("Host Private Session", True, (240, 240, 245))
-            surface.blit(title, title.get_rect(center=(UI_W // 2, 120)))
-
-            share_line = body_font.render("Share this Session ID with your friend:", True, (220, 220, 230))
-            surface.blit(share_line, share_line.get_rect(center=(UI_W // 2, 250)))
-
-            sid_text = title_font.render(host_session_id, True, (255, 220, 130))
-            surface.blit(sid_text, sid_text.get_rect(center=(UI_W // 2, 340)))
-
-            controls = small_font.render("Enter: Continue  |  C: Copy ID  |  R: Regenerate  |  Esc: Back", True, (170, 170, 190))
-            surface.blit(controls, controls.get_rect(center=(UI_W // 2, 470)))
-            if host_feedback and pygame.time.get_ticks() <= host_feedback_until_ms:
-                feedback = small_font.render(host_feedback, True, host_feedback_color)
-                surface.blit(feedback, feedback.get_rect(center=(UI_W // 2, 520)))
-
-        elif view == "join":
-            title = title_font.render("Join Private Session", True, (240, 240, 245))
-            surface.blit(title, title.get_rect(center=(UI_W // 2, 120)))
-
-            label = body_font.render("Session ID", True, (220, 220, 230))
-            surface.blit(label, label.get_rect(center=(UI_W // 2, 250)))
-
-            box = pygame.Rect(UI_W // 2 - 260, 285, 520, 60)
-            pygame.draw.rect(surface, (26, 26, 36), box, border_radius=8)
-            pygame.draw.rect(surface, (150, 150, 180), box, 2, border_radius=8)
-            cleaned_preview = sanitize_session_id(join_text)
-            display_text = cleaned_preview if cleaned_preview else "type session id..."
-            color = (245, 245, 245) if cleaned_preview else (130, 130, 150)
-            text_surface = body_font.render(display_text, True, color)
-            surface.blit(text_surface, text_surface.get_rect(midleft=(box.x + 14, box.centery)))
-
-            controls = small_font.render("Enter: Join  |  Esc: Back", True, (170, 170, 190))
-            surface.blit(controls, controls.get_rect(center=(UI_W // 2, 430)))
-
-            if join_error:
-                err = small_font.render(join_error, True, (255, 130, 130))
-                surface.blit(err, err.get_rect(center=(UI_W // 2, 490)))
-
-        present_scaled(window, surface)
-        await asyncio.sleep(0)
 
 
 def load_player_preview(
@@ -680,7 +277,7 @@ def load_player_preview(
     return scaled
 
 
-async def main(host: str, port: int, transport: str, ws_path: str) -> None:
+def main(host: str, port: int) -> None:
     pygame.init()
     window = pygame.display.set_mode((WINDOW_W, WINDOW_H))
     pygame.display.set_caption("HellCrepe Multiplayer Client")
@@ -697,36 +294,21 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
     lobby_small_font = pygame.font.SysFont("arial", 22)
     lobby_arrow_font = pygame.font.SysFont("arial", 56, bold=True)
 
-    selected_transport = transport.lower()
-    if selected_transport == "auto":
-        selected_transport = "ws" if is_web_runtime() else "ws"
+    lobby_music_path = Path(__file__).resolve().parent / "assets" / "music" / "main_music.mp3"
+    lobby_music_available = lobby_music_path.exists()
+    lobby_music_loaded = False
+    lobby_music_playing = False
 
-    matchmaking_choice = await choose_matchmaking_mode(
-        window,
-        overlay_font,
-        lobby_body_font,
-        lobby_small_font,
-        selected_transport,
-    )
-    if matchmaking_choice is None:
-        pygame.quit()
-        return
-    matchmaking_mode, requested_session_id = matchmaking_choice
-    session_id_to_use = requested_session_id if matchmaking_mode in ("host", "join") else None
-
-    reader, writer, connect_error, active_transport = await connect_with_feedback(
+    connection, connect_error = connect_with_feedback(
         window,
         overlay_font,
         info_font,
         host,
         port,
-        selected_transport,
-        ws_path,
-        session_id=session_id_to_use,
         timeout_s=8.0,
     )
-    if writer is None:
-        await show_connection_error_screen(
+    if connection is None:
+        show_connection_error_screen(
             window,
             overlay_font,
             info_font,
@@ -737,11 +319,7 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
         pygame.quit()
         return
 
-    net_state = {"player_id": None, "latest_state": None, "error": None, "session_id": session_id_to_use}
-    if active_transport == "ws":
-        read_task = asyncio.create_task(read_network_messages_ws(writer, net_state))
-    else:
-        read_task = asyncio.create_task(read_network_messages(reader, net_state))
+    net_state = {"player_id": None, "latest_state": None, "error": None, "session_id": None}
 
     visual_cache: dict[int, tuple] = {}
     current_level = STARTING_LVL
@@ -778,6 +356,8 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
     while running:
         dt = clock.tick(FPS) / 1000.0
         restart_requested = False
+
+        poll_network_messages(connection, net_state)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -891,6 +471,26 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
                         chest_overlay_wait_release = True
                     last_chest_event_id = chest_event_id
 
+        should_start_lobby_music = (
+            session_phase == "lobby"
+            and local_player is not None
+            and connected_players >= required_players
+            and net_state.get("error") is None
+        )
+        if should_start_lobby_music and lobby_music_available and not lobby_music_playing:
+            try:
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                if not lobby_music_loaded:
+                    pygame.mixer.music.load(str(lobby_music_path))
+                    pygame.mixer.music.set_volume(0.45)
+                    lobby_music_loaded = True
+                pygame.mixer.music.play(-1)
+                lobby_music_playing = True
+            except Exception:
+                lobby_music_available = False
+                lobby_music_playing = False
+
         if session_phase != "playing":
             chest_overlay_messages = []
             chest_overlay_index = 0
@@ -930,14 +530,13 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
                     fallback_name = f"Player {player_id}" if player_id is not None else "Player"
                     username_to_send = normalize_username(lobby_username, fallback_name)
                     chosen_skin = available_skins[lobby_skin_index] if available_skins else "default"
-                    await send_json(
-                        writer,
+                    connection.queue_json(
                         {
                             "type": "lobby",
                             "username": username_to_send,
                             "skin": chosen_skin,
                             "ready": bool(lobby_ready),
-                        },
+                        }
                     )
                 else:
                     input_locked = (session_phase != "playing") or chest_overlay_active or pause_menu_open
@@ -951,8 +550,9 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
                         "aim_y": aim_y,
                         "restart": restart_requested,
                     }
-                    await send_json(writer, input_payload)
-            except Exception:
+                    connection.queue_json(input_payload)
+                connection.flush()
+            except ConnectionError:
                 net_state["error"] = "Disconnected from server."
 
         screen.fill((15, 15, 20))
@@ -1208,20 +808,7 @@ async def main(host: str, port: int, transport: str, ws_path: str) -> None:
         scaled = pygame.transform.scale(screen, (scaled_w, scaled_h))
         window.blit(scaled, (off_x, off_y))
         pygame.display.flip()
-        await asyncio.sleep(0)
-
-    read_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await read_task
-    with suppress(Exception):
-        if active_transport == "tcp":
-            writer.close()
-            await writer.wait_closed()
-        else:
-            await writer.close()
-            wait_closed = getattr(writer, "wait_closed", None)
-            if callable(wait_closed):
-                await wait_closed()
+    connection.close()
     pygame.quit()
 
 
@@ -1229,11 +816,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="HellCrepe multiplayer client")
     parser.add_argument("--host", default="127.0.0.1", help="Server host/IP")
     parser.add_argument("--port", type=int, default=9000, help="Server port")
-    parser.add_argument("--transport", choices=["auto", "tcp", "ws"], default="ws", help="Network transport")
-    parser.add_argument("--ws-path", default="/ws", help="WebSocket path")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    asyncio.run(main(args.host, args.port, args.transport, args.ws_path))
+    main(args.host, args.port)
