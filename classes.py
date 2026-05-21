@@ -1,15 +1,13 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
 import random
 import socket
-import time
 import xml.etree.ElementTree as ET
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 import pygame
 
@@ -40,347 +38,169 @@ from settings import (
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
-class Player:
-    def __init__(self, x, y, skin_name: str | None = None):
-        """  Init  ."""
-        self.hitbox = pygame.Rect(x, y, 16, 22)
+def move_and_collide(
+    rect: pygame.Rect,
+    vx: float,
+    vy: float,
+    solids: list[pygame.Rect],
+    dt: float,
+    allow_step: bool,
+) -> tuple[float, bool]:
+    dx = int(vx * dt)
+    rect.x += dx
+    if dx != 0:
+        hit = None
+        for s in solids:
+            if rect.colliderect(s):
+                hit = s
+                break
+        if hit is not None:
+            if allow_step:
+                original_y = rect.y
+                stepped = False
+                for step in range(1, MAX_STEP_HEIGHT + 1):
+                    rect.y = original_y - step
+                    blocked = False
+                    for s2 in solids:
+                        if rect.colliderect(s2):
+                            blocked = True
+                            break
+                    if not blocked:
+                        stepped = True
+                        break
+                if not stepped:
+                    rect.y = original_y
+                    if dx > 0:
+                        rect.right = hit.left
+                    else:
+                        rect.left = hit.right
+            else:
+                if dx > 0:
+                    rect.right = hit.left
+                else:
+                    rect.left = hit.right
 
+    on_ground = False
+    rect.y += int(vy * dt)
+    for s in solids:
+        if rect.colliderect(s):
+            if vy > 0:
+                rect.bottom = s.top
+                vy = 0.0
+                on_ground = True
+            elif vy < 0:
+                rect.top = s.bottom
+                vy = 0.0
+    return vy, on_ground
+
+
+def load_collision_rects_from_tmx(path: Path) -> list[pygame.Rect]:
+    root = ET.parse(path).getroot()
+    map_w = int(root.attrib["width"])
+    tile_w = int(root.attrib["tilewidth"])
+    tile_h = int(root.attrib["tileheight"])
+
+    layer = None
+    for candidate in root.findall("layer"):
+        if candidate.attrib.get("name") == "Collision":
+            layer = candidate
+            break
+    if layer is None:
+        return []
+    data_node = layer.find("data")
+    if data_node is None:
+        return []
+    if data_node.attrib.get("encoding") != "csv":
+        raise ValueError("Collision layer must use csv encoding")
+
+    raw = (data_node.text or "").replace("\n", "")
+    gids = [int(token.strip()) for token in raw.split(",") if token.strip()]
+    solids: list[pygame.Rect] = []
+    for idx, gid in enumerate(gids):
+        if gid == 0:
+            continue
+        tx = idx % map_w
+        ty = idx // map_w
+        solids.append(pygame.Rect(tx * tile_w, ty * tile_h, tile_w, tile_h))
+    return solids
+
+
+class Player:
+    def __init__(self, x: int, y: int, skin_name: str | None = None):
+        self.hitbox = pygame.Rect(x, y, 16, 22)
         self.sprite_w, self.sprite_h = 32, 32
         self.sprite_offset_x = -8
         self.sprite_offset_y = -10
-
         self.skin_name = skin_name or "default"
 
         root = Path(__file__).resolve().parent
         if self.skin_name != "default":
             skin_dir = root / "assets" / "player" / self.skin_name
-            frame_paths = [
-                skin_dir / "player_frame1.png",
-                skin_dir / "player_frame2.png",
-            ]
+            paths = [skin_dir / "player_frame1.png", skin_dir / "player_frame2.png"]
         else:
-            frame_paths = [
-                root / "assets" / "player" / "player_frame1.png",
-                root / "assets" / "player" / "player_frame2.png",
-            ]
-
-        if not all(path.exists() for path in frame_paths):
-            frame_paths = [
-                root / "assets" / "player" / "player_frame1.png",
-                root / "assets" / "player" / "player_frame2.png",
-            ]
+            paths = [root / "assets" / "player" / "player_frame1.png", root / "assets" / "player" / "player_frame2.png"]
+        if not all(path.exists() for path in paths):
             self.skin_name = "default"
+            paths = [root / "assets" / "player" / "player_frame1.png", root / "assets" / "player" / "player_frame2.png"]
 
-        self.frames = [
-            pygame.image.load(str(frame_paths[0])).convert_alpha(),
-            pygame.image.load(str(frame_paths[1])).convert_alpha(),
-        ]
-        self.frames = [pygame.transform.scale(img, (self.sprite_w, self.sprite_h)) for img in self.frames]
+        self.frames = [pygame.transform.scale(pygame.image.load(str(p)).convert_alpha(), (self.sprite_w, self.sprite_h)) for p in paths]
         self.image = self.frames[0]
-
-        self.hp = 3
-        self.max_hp = 3
-
         self.vx = 0.0
-        self.vy = 0.0
-        self.on_ground = False
-        self.move_speed = MOVE_SPEED
-
         self.anim_timer = 0.0
         self.anim_speed = 0.5
         self.frame_index = 0
 
-        self.jump_buffer = 0.0
-        self.hurt_timer = 0.0
-
-        self.shoot_timer = 0.0
-        self.shoot_cooldown = BASE_SHOOT_COOLDOWN
-
     @property
     def draw_pos(self):
-        """Return the sprite draw position from hitbox plus sprite offsets."""
         return self.hitbox.x + self.sprite_offset_x, self.hitbox.y + self.sprite_offset_y
 
-    def update_animation(self, dt):
-        """Advance animation timers and select the current frame orientation."""
+    def update_animation(self, dt: float):
         self.anim_timer += dt
         if self.anim_timer >= self.anim_speed:
             self.anim_timer = 0.0
             self.frame_index = (self.frame_index + 1) % len(self.frames)
-
         img = self.frames[self.frame_index]
         if self.vx < 0:
             img = pygame.transform.flip(img, True, False)
         self.image = img
 
 
-class Projectile:
-    def __init__(self, x, y, vx, vy, radius=BULLET_RADIUS, ttl=BULLET_TTL):
-        """  Init  ."""
-        self.x = float(x)
-        self.y = float(y)
-        self.vx = float(vx)
-        self.vy = float(vy)
-        self.radius = int(radius)
-        self.ttl = float(ttl)
-
-    @property
-    def rect(self):
-        """Return the current collision rectangle for this object."""
-        return pygame.Rect(
-            int(self.x - self.radius),
-            int(self.y - self.radius),
-            self.radius * 2,
-            self.radius * 2,
-        )
-
-    def update(self, dt):
-        """Advance this object by one simulation/frame step."""
-        self.x += self.vx * dt
-        self.y += self.vy * dt
-        self.ttl -= dt
-
-    def draw(self, screen):
-        """Draw this object to the provided render surface."""
-        pygame.draw.circle(screen, (255, 220, 120), (int(self.x), int(self.y)), self.radius)
-
-
-class Enemy:
-    def __init__(self, x, y, image_paths):
-        """  Init  ."""
-        self.rect = pygame.Rect(x, y, ENEMY_SIZE, ENEMY_SIZE)
-
-        if isinstance(image_paths, str):
-            image_paths = [image_paths]
-
-        self.frames = [pygame.image.load(p).convert_alpha() for p in image_paths]
-        self.frames = [pygame.transform.scale(img, (ENEMY_SIZE, ENEMY_SIZE)) for img in self.frames]
+class EnemySprite:
+    def __init__(self, enemy_type: str, x: int, y: int):
+        self.enemy_type = enemy_type
+        configs = {
+            "Pancake": (["assets/enemies/pancake/pancake_frame1.png", "assets/enemies/pancake/pancake_frame1.png"], (ENEMY_SIZE, ENEMY_SIZE)),
+            "Waffle": (["assets/enemies/waffle/waffle_frame1.png", "assets/enemies/waffle/waffle_frame2.png"], (ENEMY_SIZE, ENEMY_SIZE)),
+            "Cookie": (["assets/enemies/cookie/cookie_frame1.png", "assets/enemies/cookie/cookie_frame1.png"], (ENEMY_SIZE, ENEMY_SIZE)),
+            "Amrany": (["assets/enemies/Amrany/Amrany_frame1.png", "assets/enemies/Amrany/Amrany_frame2.png"], (64, 144)),
+        }
+        paths, (w, h) = configs.get(enemy_type, configs["Cookie"])
+        self.rect = pygame.Rect(x, y, w, h)
+        self.frames = [pygame.transform.scale(pygame.image.load(p).convert_alpha(), (w, h)) for p in paths]
         self.image = self.frames[0]
-
         self.vx = 0.0
-        self.vy = 0.0
-        self.on_ground = False
-
-        self.hp = 1
-
-        self.shoot_timer = 0.0
-        self.shoot_cooldown = ENEMY_SHOOT_COOLDOWN
-
         self.anim_timer = 0.0
         self.anim_speed = 0.25
         self.frame_index = 0
 
-    def update_animation(self, dt):
-        """Advance animation timers and select the current frame orientation."""
+    def update_animation(self, dt: float):
         if len(self.frames) <= 1:
             return
-
         self.anim_timer += dt
         if self.anim_timer >= self.anim_speed:
             self.anim_timer = 0.0
             self.frame_index = (self.frame_index + 1) % len(self.frames)
-
         img = self.frames[self.frame_index]
         if self.vx < 0:
             img = pygame.transform.flip(img, True, False)
         self.image = img
 
-    def update(self, dt, player_rect, enemy_projectiles, enemies, solids=None):
-        """Advance this object by one simulation/frame step."""
-        self.update_ai(dt, player_rect, enemies, solids)
-        self.update_animation(dt)
-        self.shoot_timer = max(0.0, self.shoot_timer - dt)
-        self.try_shoot(player_rect, enemy_projectiles, enemies)
-
-    def update_ai(self, dt, player_rect, enemies, solids):
-        """Update AI movement and decision state for the current tick."""
-        pass
-
-    def try_shoot(self, player_rect, enemy_projectiles, enemies):
-        """Attempt to attack if cooldown and targeting conditions are met."""
-        pass
-
-    def draw(self, screen):
-        """Draw this object to the provided render surface."""
+    def draw(self, screen: pygame.Surface):
         screen.blit(self.image, self.rect)
-
-
-class Pancake(Enemy):
-    def __init__(self, x, y):
-        """  Init  ."""
-        super().__init__(
-            x,
-            y,
-            [
-                "assets/enemies/pancake/pancake_frame1.png",
-                "assets/enemies/pancake/pancake_frame1.png",
-            ],
-        )
-        self.use_gravity = True
-
-    def update_ai(self, dt, player_rect, enemies, solids):
-        """Update AI movement and decision state for the current tick."""
-        if player_rect.centerx < self.rect.centerx:
-            self.vx = -ENEMY_SPEED
-        else:
-            self.vx = ENEMY_SPEED
-
-    def try_shoot(self, player_rect, enemy_projectiles, enemies):
-        """Attempt to attack if cooldown and targeting conditions are met."""
-        if self.shoot_timer > 0:
-            return
-
-        sx, sy = self.rect.centerx, self.rect.centery
-        dx = player_rect.centerx - sx
-        dy = player_rect.centery - sy
-        length = (dx * dx + dy * dy) ** 0.5
-        if length == 0:
-            return
-
-        dx /= length
-        dy /= length
-
-        vx = dx * ENEMY_BULLET_SPEED
-        vy = dy * ENEMY_BULLET_SPEED
-
-        enemy_projectiles.append(Projectile(sx, sy, vx, vy, radius=3, ttl=ENEMY_BULLET_TTL))
-        self.shoot_timer = self.shoot_cooldown
-
-
-class Waffle(Enemy):
-    def __init__(self, x, y):
-        """  Init  ."""
-        super().__init__(
-            x,
-            y,
-            [
-                "assets/enemies/waffle/waffle_frame1.png",
-                "assets/enemies/waffle/waffle_frame2.png",
-            ],
-        )
-        self.use_gravity = True
-
-    def update_ai(self, dt, player_rect, enemies, solids):
-        """Update AI movement and decision state for the current tick."""
-        if player_rect.centerx < self.rect.centerx:
-            self.vx = -ENEMY_SPEED
-        else:
-            self.vx = ENEMY_SPEED
-
-    def try_shoot(self, player_rect, enemy_projectiles, enemies):
-        """Attempt to attack if cooldown and targeting conditions are met."""
-        if self.shoot_timer > 0:
-            return
-
-        sx, sy = self.rect.centerx, self.rect.centery
-        dx = player_rect.centerx - sx
-        dy = player_rect.centery - sy
-        length = (dx * dx + dy * dy) ** 0.5
-        if length == 0:
-            return
-
-        dx /= length
-        dy /= length
-
-        vx = dx * ENEMY_BULLET_SPEED
-        vy = dy * ENEMY_BULLET_SPEED
-
-        enemy_projectiles.append(Projectile(sx, sy, vx, vy, radius=3, ttl=ENEMY_BULLET_TTL))
-        self.shoot_timer = self.shoot_cooldown
-
-
-class Cookie(Enemy):
-    def __init__(self, x, y):
-        """  Init  ."""
-        super().__init__(
-            x,
-            y,
-            [
-                "assets/enemies/cookie/cookie_frame1.png",
-                "assets/enemies/cookie/cookie_frame1.png",
-            ],
-        )
-        self.use_gravity = False
-
-    def update_ai(self, dt, player_rect, enemies, solids):
-        """Update AI movement and decision state for the current tick."""
-        if player_rect.centerx < self.rect.centerx:
-            self.vx = -ENEMY_SPEED
-        else:
-            self.vx = ENEMY_SPEED
-
-    def try_shoot(self, player_rect, enemy_projectiles, enemies):
-        """Attempt to attack if cooldown and targeting conditions are met."""
-        if self.shoot_timer > 0:
-            return
-
-        sx, sy = self.rect.centerx, self.rect.centery
-        dx = player_rect.centerx - sx
-        dy = player_rect.centery - sy
-        length = (dx * dx + dy * dy) ** 0.5
-        if length == 0:
-            return
-
-        dx /= length
-        dy /= length
-
-        vx = dx * ENEMY_BULLET_SPEED
-        vy = dy * ENEMY_BULLET_SPEED
-
-        enemy_projectiles.append(Projectile(sx, sy, vx, vy, radius=3, ttl=ENEMY_BULLET_TTL))
-        self.shoot_timer = self.shoot_cooldown
-
-
-class Amrany(Enemy):
-    def __init__(self, x, y):
-        """  Init  ."""
-        paths = [
-            "assets/enemies/Amrany/Amrany_frame1.png",
-            "assets/enemies/Amrany/Amrany_frame2.png",
-        ]
-        super().__init__(x, y, paths)
-        self.use_gravity = True
-
-        self.spawn_cooldown = ENEMY_SHOOT_COOLDOWN
-        self.spawn_timer = 0.0
-
-        self.rect = pygame.Rect(x, y, 64, 144)
-
-        self.frames = [pygame.image.load(p).convert_alpha() for p in paths]
-        self.frames = [pygame.transform.scale(img, (64, 144)) for img in self.frames]
-        self.image = self.frames[0]
-
-        self.hp = 67
-        self.max_hp = 67
-
-    def update_ai(self, dt, player_rect, enemies, solids):
-        """Update AI movement and decision state for the current tick."""
-        self.vx = 0.0
-
-    def update(self, dt, player_rect, enemy_projectiles, enemies, solids=None):
-        """Advance this object by one simulation/frame step."""
-        self.update_ai(dt, player_rect, enemies, solids)
-        self.update_animation(dt)
-        self.spawn_timer = max(0.0, self.spawn_timer - dt)
-        self.try_shoot(player_rect, enemy_projectiles, enemies)
-
-    def try_shoot(self, player_rect, enemy_projectiles, enemies):
-        """Attempt to attack if cooldown and targeting conditions are met."""
-        if self.spawn_timer > 0:
-            return
-
-        direction = -1 if player_rect.centerx < self.rect.centerx else 1
-        x_offset = (self.rect.width // 2) + (ENEMY_SIZE // 2) + 6
-        spawn_x = self.rect.centerx + direction * x_offset
-        spawn_y = random.randrange(self.rect.top, self.rect.bottom - ENEMY_SIZE - 10)
-        enemies.append(Cookie(int(spawn_x - ENEMY_SIZE // 2), int(spawn_y)))
-
-        self.spawn_timer = self.spawn_cooldown
 
 
 class TcpJsonConnection:
     def __init__(self, sock: socket.socket):
-        """  Init  ."""
         self.sock = sock
         self.sock.setblocking(False)
         self.closed = False
@@ -388,11 +208,9 @@ class TcpJsonConnection:
         self._send_buffer = b""
 
     def queue_json(self, payload: dict) -> None:
-        """Serialize and queue one JSON payload for non-blocking socket send."""
         self._send_buffer += (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
 
     def flush(self) -> None:
-        """Send queued socket bytes until blocked or fully flushed."""
         while self._send_buffer and not self.closed:
             try:
                 sent = self.sock.send(self._send_buffer)
@@ -401,16 +219,13 @@ class TcpJsonConnection:
             except OSError as exc:
                 self.closed = True
                 raise ConnectionError(str(exc)) from exc
-
             if sent <= 0:
                 self.closed = True
-                raise ConnectionError("Socket closed while sending.")
+                raise ConnectionError("Socket closed while sending")
             self._send_buffer = self._send_buffer[sent:]
 
     def poll_messages(self) -> list[str]:
-        """Read available socket bytes and return complete newline-delimited messages."""
         messages: list[str] = []
-
         while not self.closed:
             try:
                 chunk = self.sock.recv(4096)
@@ -419,11 +234,9 @@ class TcpJsonConnection:
             except OSError as exc:
                 self.closed = True
                 raise ConnectionError(str(exc)) from exc
-
             if not chunk:
                 self.closed = True
                 break
-
             self._recv_buffer += chunk
 
         while True:
@@ -432,14 +245,11 @@ class TcpJsonConnection:
                 break
             line = self._recv_buffer[:newline_idx]
             self._recv_buffer = self._recv_buffer[newline_idx + 1 :]
-            if not line:
-                continue
-            messages.append(line.decode("utf-8", errors="replace"))
-
+            if line:
+                messages.append(line.decode("utf-8", errors="replace"))
         return messages
 
     def close(self) -> None:
-        """Gracefully close the underlying socket connection."""
         if self.closed and self.sock.fileno() < 0:
             return
         with suppress(OSError):
@@ -461,7 +271,7 @@ class PlayerInput:
 
 
 @dataclass
-class SimProjectile:
+class ProjectileState:
     x: float
     y: float
     vx: float
@@ -471,256 +281,28 @@ class SimProjectile:
 
     @property
     def rect(self) -> pygame.Rect:
-        """Return the current collision rectangle for this object."""
-        return pygame.Rect(
-            int(self.x - self.radius),
-            int(self.y - self.radius),
-            self.radius * 2,
-            self.radius * 2,
-        )
+        return pygame.Rect(int(self.x - self.radius), int(self.y - self.radius), self.radius * 2, self.radius * 2)
 
     def update(self, dt: float) -> None:
-        """Advance this object by one simulation/frame step."""
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.ttl -= dt
 
 
-class SimEnemy:
-    enemy_type = "Enemy"
-    use_gravity = True
-
-    def __init__(self, enemy_id: int, x: int, y: int, w: int = ENEMY_SIZE, h: int = ENEMY_SIZE):
-        """  Init  ."""
-        self.enemy_id = enemy_id
-        self.rect = pygame.Rect(x, y, w, h)
-        self.vx = 0.0
-        self.vy = 0.0
-        self.on_ground = False
-        self.hp = 1
-        self.max_hp = 1
-        self.shoot_timer = 0.0
-        self.shoot_cooldown = ENEMY_SHOOT_COOLDOWN
-
-    def update_ai(
-        self,
-        dt: float,
-        target_rect: pygame.Rect | None,
-        enemies: list["SimEnemy"],
-        solids: list[pygame.Rect],
-    ) -> None:
-        """Update AI movement and decision state for the current tick."""
-        del dt, target_rect, enemies, solids
-
-    def try_shoot(
-        self,
-        target_rect: pygame.Rect | None,
-        enemy_projectiles: list[SimProjectile],
-        enemies: list["SimEnemy"],
-        spawn_enemy: Callable[[str, int, int], None] | None,
-    ) -> None:
-        """Attempt to attack if cooldown and targeting conditions are met."""
-        del target_rect, enemy_projectiles, enemies, spawn_enemy
-
-    def update(
-        self,
-        dt: float,
-        target_rect: pygame.Rect | None,
-        enemy_projectiles: list[SimProjectile],
-        enemies: list["SimEnemy"],
-        solids: list[pygame.Rect],
-        spawn_enemy: Callable[[str, int, int], None] | None,
-    ) -> None:
-        """Advance this object by one simulation/frame step."""
-        self.update_ai(dt, target_rect, enemies, solids)
-        self.shoot_timer = max(0.0, self.shoot_timer - dt)
-        self.try_shoot(target_rect, enemy_projectiles, enemies, spawn_enemy)
-
-    def shoot_at_target(self, target_rect: pygame.Rect | None, enemy_projectiles: list[SimProjectile]) -> None:
-        """Spawn a projectile toward the target rectangle when cooldown allows."""
-        if self.shoot_timer > 0:
-            return
-        if target_rect is None:
-            return
-
-        sx, sy = self.rect.centerx, self.rect.centery
-        dx = target_rect.centerx - sx
-        dy = target_rect.centery - sy
-        length = (dx * dx + dy * dy) ** 0.5
-        if length == 0:
-            return
-
-        dx /= length
-        dy /= length
-        vx = dx * ENEMY_BULLET_SPEED
-        vy = dy * ENEMY_BULLET_SPEED
-        enemy_projectiles.append(SimProjectile(sx, sy, vx, vy, radius=3, ttl=ENEMY_BULLET_TTL))
-        self.shoot_timer = self.shoot_cooldown
-
-
-class SimPancake(SimEnemy):
-    enemy_type = "Pancake"
-    use_gravity = True
-
-    def update_ai(
-        self,
-        dt: float,
-        target_rect: pygame.Rect | None,
-        enemies: list[SimEnemy],
-        solids: list[pygame.Rect],
-    ) -> None:
-        """Update AI movement and decision state for the current tick."""
-        del dt, enemies, solids
-        if target_rect is None:
-            self.vx = 0.0
-            return
-        self.vx = -ENEMY_SPEED if target_rect.centerx < self.rect.centerx else ENEMY_SPEED
-
-    def try_shoot(
-        self,
-        target_rect: pygame.Rect | None,
-        enemy_projectiles: list[SimProjectile],
-        enemies: list[SimEnemy],
-        spawn_enemy: Callable[[str, int, int], None] | None,
-    ) -> None:
-        """Attempt to attack if cooldown and targeting conditions are met."""
-        del enemies, spawn_enemy
-        self.shoot_at_target(target_rect, enemy_projectiles)
-
-
-class SimWaffle(SimEnemy):
-    enemy_type = "Waffle"
-    use_gravity = True
-
-    def update_ai(
-        self,
-        dt: float,
-        target_rect: pygame.Rect | None,
-        enemies: list[SimEnemy],
-        solids: list[pygame.Rect],
-    ) -> None:
-        """Update AI movement and decision state for the current tick."""
-        del dt, enemies, solids
-        if target_rect is None:
-            self.vx = 0.0
-            return
-        self.vx = -ENEMY_SPEED if target_rect.centerx < self.rect.centerx else ENEMY_SPEED
-
-    def try_shoot(
-        self,
-        target_rect: pygame.Rect | None,
-        enemy_projectiles: list[SimProjectile],
-        enemies: list[SimEnemy],
-        spawn_enemy: Callable[[str, int, int], None] | None,
-    ) -> None:
-        """Attempt to attack if cooldown and targeting conditions are met."""
-        del enemies, spawn_enemy
-        self.shoot_at_target(target_rect, enemy_projectiles)
-
-
-class SimCookie(SimEnemy):
-    enemy_type = "Cookie"
-    use_gravity = False
-
-    def update_ai(
-        self,
-        dt: float,
-        target_rect: pygame.Rect | None,
-        enemies: list[SimEnemy],
-        solids: list[pygame.Rect],
-    ) -> None:
-        """Update AI movement and decision state for the current tick."""
-        del dt, enemies, solids
-        if target_rect is None:
-            self.vx = 0.0
-            return
-        self.vx = -ENEMY_SPEED if target_rect.centerx < self.rect.centerx else ENEMY_SPEED
-
-    def try_shoot(
-        self,
-        target_rect: pygame.Rect | None,
-        enemy_projectiles: list[SimProjectile],
-        enemies: list[SimEnemy],
-        spawn_enemy: Callable[[str, int, int], None] | None,
-    ) -> None:
-        """Attempt to attack if cooldown and targeting conditions are met."""
-        del enemies, spawn_enemy
-        self.shoot_at_target(target_rect, enemy_projectiles)
-
-
-class SimAmrany(SimEnemy):
-    enemy_type = "Amrany"
-    use_gravity = True
-
-    def __init__(self, enemy_id: int, x: int, y: int):
-        """  Init  ."""
-        super().__init__(enemy_id, x, y, 64, 144)
-        self.hp = 67
-        self.max_hp = 67
-        self.spawn_cooldown = ENEMY_SHOOT_COOLDOWN
-        self.spawn_timer = 0.0
-
-    def update_ai(
-        self,
-        dt: float,
-        target_rect: pygame.Rect | None,
-        enemies: list[SimEnemy],
-        solids: list[pygame.Rect],
-    ) -> None:
-        """Update AI movement and decision state for the current tick."""
-        del dt, target_rect, enemies, solids
-        self.vx = 0.0
-
-    def update(
-        self,
-        dt: float,
-        target_rect: pygame.Rect | None,
-        enemy_projectiles: list[SimProjectile],
-        enemies: list[SimEnemy],
-        solids: list[pygame.Rect],
-        spawn_enemy: Callable[[str, int, int], None] | None,
-    ) -> None:
-        """Advance this object by one simulation/frame step."""
-        self.update_ai(dt, target_rect, enemies, solids)
-        self.spawn_timer = max(0.0, self.spawn_timer - dt)
-        self.try_shoot(target_rect, enemy_projectiles, enemies, spawn_enemy)
-
-    def try_shoot(
-        self,
-        target_rect: pygame.Rect | None,
-        enemy_projectiles: list[SimProjectile],
-        enemies: list[SimEnemy],
-        spawn_enemy: Callable[[str, int, int], None] | None,
-    ) -> None:
-        """Attempt to attack if cooldown and targeting conditions are met."""
-        del enemy_projectiles, enemies
-        if self.spawn_timer > 0:
-            return
-        if spawn_enemy is None:
-            return
-        if target_rect is None:
-            return
-
-        direction = -1 if target_rect.centerx < self.rect.centerx else 1
-        x_offset = (self.rect.width // 2) + (ENEMY_SIZE // 2) + 6
-        spawn_x = self.rect.centerx + direction * x_offset
-
-        upper = self.rect.bottom - ENEMY_SIZE - 10
-        if upper <= self.rect.top:
-            spawn_y = self.rect.top
-        else:
-            spawn_y = random.randrange(self.rect.top, upper)
-
-        spawn_enemy("Cookie", int(spawn_x - ENEMY_SIZE // 2), int(spawn_y))
-        self.spawn_timer = self.spawn_cooldown
-
-
-ENEMY_FACTORY = {
-    "Pancake": SimPancake,
-    "Waffle": SimWaffle,
-    "Cookie": SimCookie,
-    "Amrany": SimAmrany,
-}
+@dataclass
+class EnemyState:
+    enemy_id: int
+    enemy_type: str
+    rect: pygame.Rect
+    hp: int
+    max_hp: int
+    vx: float = 0.0
+    vy: float = 0.0
+    shoot_timer: float = 0.0
+    shoot_cooldown: float = ENEMY_SHOOT_COOLDOWN
+    spawn_timer: float = 0.0
+    spawn_cooldown: float = ENEMY_SHOOT_COOLDOWN
+    on_ground: bool = False
 
 
 @dataclass
@@ -748,128 +330,122 @@ class SimPlayer:
     last_jump_down: bool = False
     chest_event_id: int = 0
     chest_event_level: int = STARTING_LVL
-    projectiles: list[SimProjectile] = field(default_factory=list)
+    projectiles: list[ProjectileState] = field(default_factory=list)
 
 
 @dataclass
-class LevelGeometry:
-    solids: list[pygame.Rect]
-    end_rect: pygame.Rect
-    chest_rect: pygame.Rect
-    width: int
-    height: int
-
-
-@dataclass
-class SharedLevelState:
+class LevelState:
     level: int
     solids: list[pygame.Rect]
     end_rect: pygame.Rect
     chest_rect: pygame.Rect
     width: int
     height: int
+    enemies: list[EnemyState] = field(default_factory=list)
+    next_enemy_id: int = 1
     chest_open: bool = False
     chest_claimed_by: set[int] = field(default_factory=set)
-    enemies: list[SimEnemy] = field(default_factory=list)
-    enemy_projectiles: list[SimProjectile] = field(default_factory=list)
-    next_enemy_id: int = 1
+    enemy_projectiles: list[ProjectileState] = field(default_factory=list)
 
 
 class DungeonGameServer:
-    def __init__(
-        self,
-        host: str,
-        port: int,
-        max_players: int = 2,
-        session_id: str = "default",
-    ):
-        """  Init  ."""
+    def __init__(self, host: str, port: int, max_players: int = 2):
         self.host = host
         self.port = port
         self.max_players = max_players
-        self.session_id = session_id
-
         self.players: dict[int, SimPlayer] = {}
         self.inputs: dict[int, PlayerInput] = {}
         self.writers: dict[int, asyncio.StreamWriter] = {}
-
-        self.level_cache: dict[int, LevelGeometry] = {}
-        self.levels: dict[int, SharedLevelState] = {}
-
+        self.level_cache: dict[int, tuple[list[pygame.Rect], pygame.Rect, pygame.Rect, int, int]] = {}
+        self.levels: dict[int, LevelState] = {}
         self.available_skins = self.discover_skins()
         self.match_started = False
         self.tick = 0
 
     @staticmethod
     def level_key(level: int) -> str:
-        """Convert a numeric level index to the MAP_DICT key format."""
         return f"lvl{level}"
 
-    @staticmethod
-    def move_and_collide(
-        rect: pygame.Rect,
-        vx: float,
-        vy: float,
-        solids: list[pygame.Rect],
-        dt: float,
-        allow_step: bool,
-    ) -> tuple[float, bool]:
-        """Integrate velocity and resolve collisions against solid tiles, with optional stepping."""
-        dx = int(vx * dt)
-        rect.x += dx
+    def discover_skins(self) -> list[str]:
+        base_dir = PROJECT_ROOT / "assets" / "player"
+        skins: list[str] = []
+        if base_dir.exists():
+            for entry in sorted(base_dir.iterdir(), key=lambda p: p.name.lower()):
+                if entry.is_dir() and (entry / "player_frame1.png").exists() and (entry / "player_frame2.png").exists():
+                    skins.append(entry.name)
+        return skins or ["default"]
 
-        if dx != 0:
-            hit = None
-            for s in solids:
-                if rect.colliderect(s):
-                    hit = s
-                    break
+    def default_skin(self) -> str:
+        return self.available_skins[0]
 
-            if hit is not None:
-                if allow_step:
-                    original_y = rect.y
-                    stepped = False
-                    for step in range(1, MAX_STEP_HEIGHT + 1):
-                        rect.y = original_y - step
-                        blocked = False
-                        for s2 in solids:
-                            if rect.colliderect(s2):
-                                blocked = True
-                                break
-                        if not blocked:
-                            stepped = True
-                            break
+    def players_connected(self) -> bool:
+        return len(self.players) >= self.max_players
 
-                    if not stepped:
-                        rect.y = original_y
-                        if dx > 0:
-                            rect.right = hit.left
-                        else:
-                            rect.left = hit.right
-                else:
-                    if dx > 0:
-                        rect.right = hit.left
-                    else:
-                        rect.left = hit.right
+    def all_players_ready(self) -> bool:
+        return self.players_connected() and all(p.ready for p in self.players.values())
 
-        on_ground = False
+    def session_phase(self) -> str:
+        if not self.players_connected():
+            return "waiting"
+        return "playing" if self.match_started else "lobby"
 
-        rect.y += int(vy * dt)
-        for s in solids:
-            if rect.colliderect(s):
-                if vy > 0:
-                    rect.bottom = s.top
-                    vy = 0.0
-                    on_ground = True
-                elif vy < 0:
-                    rect.top = s.bottom
-                    vy = 0.0
+    def next_free_player_id(self) -> int | None:
+        for pid in range(1, self.max_players + 1):
+            if pid not in self.players:
+                return pid
+        return None
 
-        return vy, on_ground
+    def reset_dynamic_world(self):
+        self.levels.clear()
+        self.tick = 0
 
-    @staticmethod
-    def apply_reward(player: SimPlayer, reward: tuple[str, str, float]) -> None:
-        """Apply reward tuple effects to player stats with bounds enforcement."""
+    def make_enemy(self, enemy_id: int, enemy_type: str, ex: int, ey: int) -> EnemyState:
+        if enemy_type == "Amrany":
+            return EnemyState(enemy_id, enemy_type, pygame.Rect(ex, ey, 64, 144), hp=67, max_hp=67)
+        return EnemyState(enemy_id, enemy_type, pygame.Rect(ex, ey, ENEMY_SIZE, ENEMY_SIZE), hp=1, max_hp=1)
+
+    def ensure_level(self, level: int) -> LevelState:
+        state = self.levels.get(level)
+        if state is not None:
+            return state
+
+        cached = self.level_cache.get(level)
+        if cached is None:
+            cfg = MAP_DICT[self.level_key(level)]
+            width, height = cfg.get("window", (53 * 16, 20 * 16))
+            end_x, end_y = cfg["end"]
+            chest_x, chest_y = cfg["chest"]
+            solids = load_collision_rects_from_tmx(PROJECT_ROOT / f"{cfg['map']}.tmx")
+            cached = (solids, pygame.Rect(end_x, end_y, 16, 16), pygame.Rect(chest_x, chest_y, 16, 16), width, height)
+            self.level_cache[level] = cached
+
+        solids, end_rect, chest_rect, width, height = cached
+        cfg = MAP_DICT[self.level_key(level)]
+        enemies: list[EnemyState] = []
+        next_id = 1
+        for enemy_name, (ex, ey) in cfg["enemies"]:
+            enemies.append(self.make_enemy(next_id, enemy_name, ex, ey))
+            next_id += 1
+
+        state = LevelState(
+            level=level,
+            solids=solids,
+            end_rect=end_rect.copy(),
+            chest_rect=chest_rect.copy(),
+            width=width,
+            height=height,
+            enemies=enemies,
+            next_enemy_id=next_id,
+        )
+        self.levels[level] = state
+        return state
+
+    def spawn_enemy(self, state: LevelState, enemy_type: str, ex: int, ey: int):
+        enemy = self.make_enemy(state.next_enemy_id, enemy_type, ex, ey)
+        state.next_enemy_id += 1
+        state.enemies.append(enemy)
+
+    def apply_reward(self, player: SimPlayer, reward: tuple[str, str, float]) -> None:
         attr, op, val = reward
         cur = getattr(player, attr)
         if op == "add":
@@ -878,194 +454,15 @@ class DungeonGameServer:
             setattr(player, attr, cur * val)
         elif op == "set":
             setattr(player, attr, val)
-
         if attr in ("max_hp", "hp"):
-            if player.max_hp < 1:
-                player.max_hp = 1
-            if player.hp > player.max_hp:
-                player.hp = player.max_hp
-            if player.hp < 0:
-                player.hp = 0
+            player.max_hp = max(1, player.max_hp)
+            player.hp = max(0, min(player.hp, player.max_hp))
+        if attr == "shoot_cooldown":
+            player.shoot_cooldown = max(0.05, player.shoot_cooldown)
 
-        if attr == "shoot_cooldown" and player.shoot_cooldown < 0.05:
-            player.shoot_cooldown = 0.05
-
-    @staticmethod
-    def load_collision_rects_from_tmx(path: Path, layer_name: str = "Collision") -> list[pygame.Rect]:
-        """Parse TMX collision-layer CSV data into physics solid rectangles."""
-        root = ET.parse(path).getroot()
-        map_w = int(root.attrib["width"])
-        tile_w = int(root.attrib["tilewidth"])
-        tile_h = int(root.attrib["tileheight"])
-
-        target_layer = None
-        for layer in root.findall("layer"):
-            if layer.attrib.get("name") == layer_name:
-                target_layer = layer
-                break
-
-        if target_layer is None:
-            return []
-
-        data_node = target_layer.find("data")
-        if data_node is None:
-            return []
-
-        encoding = data_node.attrib.get("encoding", "")
-        if encoding != "csv":
-            raise ValueError(f"Unsupported TMX data encoding '{encoding}' in {path}")
-
-        raw = (data_node.text or "").replace("\n", "")
-        gids = [int(token.strip()) for token in raw.split(",") if token.strip()]
-
-        solids: list[pygame.Rect] = []
-        for idx, gid in enumerate(gids):
-            if gid == 0:
-                continue
-            tx = idx % map_w
-            ty = idx // map_w
-            solids.append(pygame.Rect(tx * tile_w, ty * tile_h, tile_w, tile_h))
-        return solids
-
-    def discover_skins(self) -> list[str]:
-        """Discover valid player skin folders that contain required frame assets."""
-        base_dir = PROJECT_ROOT / "assets" / "player"
-        skins: list[str] = []
-        if base_dir.exists():
-            for entry in sorted(base_dir.iterdir(), key=lambda p: p.name.lower()):
-                if not entry.is_dir():
-                    continue
-                if (entry / "player_frame1.png").exists() and (entry / "player_frame2.png").exists():
-                    skins.append(entry.name)
-
-        if skins:
-            return skins
-
-        return ["default"]
-
-    def default_skin(self) -> str:
-        """Return the default skin name used for new players."""
-        return self.available_skins[0] if self.available_skins else "default"
-
-    def players_connected(self) -> bool:
-        """Return whether enough players are connected to run the match."""
-        return len(self.players) >= self.max_players
-
-    def all_players_ready(self) -> bool:
-        """Return whether all connected players are marked ready in lobby."""
-        if not self.players_connected():
-            return False
-        return all(player.ready for player in self.players.values())
-
-    def session_phase(self) -> str:
-        """Return current session phase: waiting, lobby, or playing."""
-        if not self.players_connected():
-            return "waiting"
-        if not self.match_started:
-            return "lobby"
-        return "playing"
-
-    def reset_dynamic_world(self) -> None:
-        """Clear per-run world state and reset tick counters."""
-        self.levels.clear()
-        self.tick = 0
-
-    def reset_players_for_lobby(self) -> None:
-        """Reset all connected players back to fresh lobby state."""
-        self.match_started = False
-        self.reset_dynamic_world()
-        for player in self.players.values():
-            player.current_level = STARTING_LVL
-            player.ready = False
-            self.reset_player(player, carry_stats=False)
-
-    def start_match(self) -> None:
-        """Start a new run and initialize players/world from default state."""
-        self.match_started = True
-        self.reset_dynamic_world()
-        for player in self.players.values():
-            player.current_level = STARTING_LVL
-            player.ready = False
-            self.reset_player(player, carry_stats=False)
-
-    def next_free_player_id(self) -> int | None:
-        """Return the first available player slot ID, or None when full."""
-        for pid in range(1, self.max_players + 1):
-            if pid not in self.players:
-                return pid
-        return None
-
-    def get_level_geometry(self, level: int) -> LevelGeometry:
-        """Load and cache static geometry for a level (solids, chest, end, dimensions)."""
-        cached = self.level_cache.get(level)
-        if cached is not None:
-            return cached
-
-        cfg = MAP_DICT[self.level_key(level)]
-        width, height = cfg.get("window", (53 * 16, 20 * 16))
-        end_x, end_y = cfg["end"]
-        chest_x, chest_y = cfg["chest"]
-        tmx_path = PROJECT_ROOT / f"{cfg['map']}.tmx"
-        solids = self.load_collision_rects_from_tmx(tmx_path)
-
-        geom = LevelGeometry(
-            solids=solids,
-            end_rect=pygame.Rect(end_x, end_y, 16, 16),
-            chest_rect=pygame.Rect(chest_x, chest_y, 16, 16),
-            width=width,
-            height=height,
-        )
-        self.level_cache[level] = geom
-        return geom
-
-    def make_level_enemies(self, level: int) -> tuple[list[SimEnemy], int]:
-        """Build initial enemy instances configured for a given level."""
-        enemies: list[SimEnemy] = []
-        next_enemy_id = 1
-        cfg = MAP_DICT[self.level_key(level)]
-        for enemy_name, (ex, ey) in cfg["enemies"]:
-            enemy_cls = ENEMY_FACTORY.get(enemy_name)
-            if enemy_cls is None:
-                continue
-            enemies.append(enemy_cls(next_enemy_id, ex, ey))
-            next_enemy_id += 1
-        return enemies, next_enemy_id
-
-    def get_or_create_level_state(self, level: int) -> SharedLevelState:
-        """Return shared runtime level state or create it on first access."""
-        state = self.levels.get(level)
-        if state is not None:
-            return state
-
-        geom = self.get_level_geometry(level)
-        enemies, next_enemy_id = self.make_level_enemies(level)
-        state = SharedLevelState(
-            level=level,
-            solids=geom.solids,
-            end_rect=geom.end_rect.copy(),
-            chest_rect=geom.chest_rect.copy(),
-            width=geom.width,
-            height=geom.height,
-            enemies=enemies,
-            next_enemy_id=next_enemy_id,
-        )
-        self.levels[level] = state
-        return state
-
-    def spawn_enemy(self, level_state: SharedLevelState, enemy_name: str, ex: int, ey: int) -> None:
-        """Spawn a new enemy into an existing shared level state."""
-        enemy_cls = ENEMY_FACTORY.get(enemy_name)
-        if enemy_cls is None:
-            return
-        enemy = enemy_cls(level_state.next_enemy_id, ex, ey)
-        level_state.next_enemy_id += 1
-        level_state.enemies.append(enemy)
-
-    def reset_player(self, player: SimPlayer, carry_stats: bool) -> None:
-        """Reset per-run player state and optionally keep progression stats."""
+    def reset_player(self, player: SimPlayer, carry_stats: bool):
         cfg = MAP_DICT[self.level_key(player.current_level)]
         sx, sy = cfg["start"]
-
         if carry_stats:
             max_hp = player.max_hp
             hp = min(player.hp, max_hp)
@@ -1076,7 +473,6 @@ class DungeonGameServer:
             hp = BASE_HEARTS
             shoot_cooldown = BASE_SHOOT_COOLDOWN
             move_speed = MOVE_SPEED
-
         player.hitbox = pygame.Rect(sx, sy, 16, 22)
         player.hp = hp
         player.max_hp = max_hp
@@ -1094,14 +490,12 @@ class DungeonGameServer:
         player.locked = True
         player.last_jump_down = False
         player.projectiles.clear()
-
-        self.get_or_create_level_state(player.current_level)
+        self.ensure_level(player.current_level)
         if player.player_id in self.inputs:
             self.inputs[player.player_id].aim_x = player.hitbox.centerx
             self.inputs[player.player_id].aim_y = player.hitbox.centery
 
     def create_player(self, player_id: int) -> SimPlayer:
-        """Create a new simulated player and register default input state."""
         player = SimPlayer(
             player_id=player_id,
             hitbox=pygame.Rect(0, 0, 16, 22),
@@ -1109,54 +503,68 @@ class DungeonGameServer:
             skin=self.default_skin(),
             ready=False,
         )
-        player.current_level = STARTING_LVL
         self.inputs[player_id] = PlayerInput()
         self.reset_player(player, carry_stats=False)
         return player
 
-    def build_target_rect(self, enemy: SimEnemy, players_here: list[SimPlayer]) -> pygame.Rect | None:
-        """Pick the nearest alive player hitbox for enemy targeting."""
-        if not players_here:
-            return None
+    def reset_players_for_lobby(self):
+        self.match_started = False
+        self.reset_dynamic_world()
+        for player in self.players.values():
+            player.current_level = STARTING_LVL
+            player.ready = False
+            self.reset_player(player, carry_stats=False)
 
-        ex, ey = enemy.rect.centerx, enemy.rect.centery
-        closest = None
+    def start_match(self):
+        self.match_started = True
+        self.reset_dynamic_world()
+        for player in self.players.values():
+            player.current_level = STARTING_LVL
+            player.ready = False
+            self.reset_player(player, carry_stats=False)
+
+    @staticmethod
+    def chest_interaction_rect(chest_rect: pygame.Rect) -> pygame.Rect:
+        return pygame.Rect(chest_rect.x - 16, chest_rect.y, 48, 32)
+
+    @staticmethod
+    def nearest_target(enemy_rect: pygame.Rect, players: list[SimPlayer]) -> pygame.Rect | None:
+        if not players:
+            return None
+        ex, ey = enemy_rect.centerx, enemy_rect.centery
         best_dist = None
-        for p in players_here:
-            dx = p.hitbox.centerx - ex
-            dy = p.hitbox.centery - ey
+        best = None
+        for player in players:
+            dx = player.hitbox.centerx - ex
+            dy = player.hitbox.centery - ey
             dist = dx * dx + dy * dy
             if best_dist is None or dist < best_dist:
                 best_dist = dist
-                closest = p
-        return closest.hitbox if closest is not None else None
+                best = player.hitbox
+        return best
 
-    def spawn_player_projectile(self, player: SimPlayer, aim_x: float, aim_y: float) -> None:
-        """Spawn a normalized-direction projectile from player center to aim point."""
-        sx, sy = player.hitbox.centerx, player.hitbox.centery
-        dx = aim_x - sx
-        dy = aim_y - sy
+    @staticmethod
+    def shoot_toward(
+        shooter_rect: pygame.Rect,
+        target_rect: pygame.Rect | None,
+        projectiles: list[ProjectileState],
+        speed: float,
+        ttl: float,
+    ) -> bool:
+        if target_rect is None:
+            return False
+        sx, sy = shooter_rect.centerx, shooter_rect.centery
+        dx = target_rect.centerx - sx
+        dy = target_rect.centery - sy
         length = (dx * dx + dy * dy) ** 0.5
         if length == 0:
-            return
-
+            return False
         dx /= length
         dy /= length
-        player.projectiles.append(
-            SimProjectile(
-                x=sx,
-                y=sy,
-                vx=dx * BULLET_SPEED,
-                vy=dy * BULLET_SPEED,
-            )
-        )
+        projectiles.append(ProjectileState(sx, sy, dx * speed, dy * speed, radius=3, ttl=ttl))
+        return True
 
-    def get_chest_interaction_rect(self, chest_rect: pygame.Rect) -> pygame.Rect:
-        """Expand chest anchor tile into an interaction rectangle matching sprite size."""
-        return pygame.Rect(chest_rect.x - 16, chest_rect.y, 48, 32)
-
-    def step_players(self, dt: float) -> None:
-        """Run one tick of player input, movement, progression, and transitions."""
+    def step_players(self, dt: float):
         if any(inp.restart for inp in self.inputs.values()):
             for inp in self.inputs.values():
                 inp.restart = False
@@ -1165,13 +573,10 @@ class DungeonGameServer:
 
         for pid, player in list(self.players.items()):
             inp = self.inputs.get(pid)
-            if inp is None:
+            if inp is None or player.dead or player.won:
                 continue
 
-            if player.dead or player.won:
-                continue
-
-            level = self.get_or_create_level_state(player.current_level)
+            level = self.ensure_level(player.current_level)
             cfg = MAP_DICT[self.level_key(player.current_level)]
 
             player.shoot_timer = max(0.0, player.shoot_timer - dt)
@@ -1183,8 +588,13 @@ class DungeonGameServer:
             player.last_jump_down = inp.jump
 
             if inp.shoot and player.shoot_timer == 0.0:
-                self.spawn_player_projectile(player, inp.aim_x, inp.aim_y)
-                player.shoot_timer = player.shoot_cooldown
+                sx, sy = player.hitbox.centerx, player.hitbox.centery
+                dx = inp.aim_x - sx
+                dy = inp.aim_y - sy
+                length = (dx * dx + dy * dy) ** 0.5
+                if length > 0:
+                    player.projectiles.append(ProjectileState(sx, sy, (dx / length) * BULLET_SPEED, (dy / length) * BULLET_SPEED))
+                    player.shoot_timer = player.shoot_cooldown
 
             player.vx = 0.0
             if inp.left:
@@ -1193,17 +603,10 @@ class DungeonGameServer:
                 player.vx += player.move_speed
 
             player.vy += GRAVITY * dt
-            player.vy, player.on_ground = self.move_and_collide(
-                player.hitbox,
-                player.vx,
-                player.vy,
-                level.solids,
-                dt,
-                allow_step=player.on_ground,
-            )
+            player.vy, player.on_ground = move_and_collide(player.hitbox, player.vx, player.vy, level.solids, dt, allow_step=player.on_ground)
 
-            chest_interaction_rect = self.get_chest_interaction_rect(level.chest_rect)
-            if player.hitbox.colliderect(chest_interaction_rect) and pid not in level.chest_claimed_by:
+            chest_rect = self.chest_interaction_rect(level.chest_rect)
+            if player.hitbox.colliderect(chest_rect) and pid not in level.chest_claimed_by:
                 level.chest_claimed_by.add(pid)
                 level.chest_open = True
                 player.chest_event_id += 1
@@ -1212,14 +615,13 @@ class DungeonGameServer:
                     self.apply_reward(player, reward)
 
             has_claimed = pid in level.chest_claimed_by
-
             if (not player.visual_advanced) and has_claimed and cfg.get("chest_change_map", False):
                 next_level = player.current_level + 1
                 if self.level_key(next_level) in MAP_DICT:
                     player.current_level = next_level
                     player.visual_advanced = True
                     player.projectiles.clear()
-                    self.get_or_create_level_state(next_level)
+                    self.ensure_level(next_level)
                     continue
 
             if (not player.visual_advanced) and len(level.enemies) == 0 and cfg.get("cleared", False):
@@ -1229,7 +631,7 @@ class DungeonGameServer:
                     player.visual_advanced = True
                     player.locked = False
                     player.projectiles.clear()
-                    self.get_or_create_level_state(next_level)
+                    self.ensure_level(next_level)
                     continue
 
             can_exit = (not cfg.get("cleared", False)) or (cfg.get("cleared", False) and (not player.locked))
@@ -1248,31 +650,36 @@ class DungeonGameServer:
                 player.on_ground = False
                 player.jump_buffer = 0.0
 
-    def step_levels(self, dt: float) -> None:
-        """Run one tick of enemies, projectiles, collisions, and damage."""
+    def step_levels(self, dt: float):
         for level_idx, level in list(self.levels.items()):
             players_here = [p for p in self.players.values() if (not p.dead) and p.current_level == level_idx]
 
-            for enemy in level.enemies[:]:
-                target_rect = self.build_target_rect(enemy, players_here)
-                enemy.update(
-                    dt,
-                    target_rect,
-                    level.enemy_projectiles,
-                    level.enemies,
-                    level.solids,
-                    lambda name, ex, ey: self.spawn_enemy(level, name, ex, ey),
-                )
-                if getattr(enemy, "use_gravity", True):
+            for enemy in level.enemies:
+                target = self.nearest_target(enemy.rect, players_here)
+                enemy.shoot_timer = max(0.0, enemy.shoot_timer - dt)
+
+                if enemy.enemy_type in ("Pancake", "Waffle", "Cookie"):
+                    if target is None:
+                        enemy.vx = 0.0
+                    else:
+                        enemy.vx = -ENEMY_SPEED if target.centerx < enemy.rect.centerx else ENEMY_SPEED
+                    if enemy.shoot_timer == 0.0 and self.shoot_toward(enemy.rect, target, level.enemy_projectiles, ENEMY_BULLET_SPEED, ENEMY_BULLET_TTL):
+                        enemy.shoot_timer = enemy.shoot_cooldown
+                elif enemy.enemy_type == "Amrany":
+                    enemy.vx = 0.0
+                    enemy.spawn_timer = max(0.0, enemy.spawn_timer - dt)
+                    if enemy.spawn_timer == 0.0 and target is not None:
+                        direction = -1 if target.centerx < enemy.rect.centerx else 1
+                        spawn_x = enemy.rect.centerx + direction * ((enemy.rect.width // 2) + (ENEMY_SIZE // 2) + 6)
+                        upper = enemy.rect.bottom - ENEMY_SIZE - 10
+                        spawn_y = enemy.rect.top if upper <= enemy.rect.top else random.randrange(enemy.rect.top, upper)
+                        self.spawn_enemy(level, "Cookie", int(spawn_x - ENEMY_SIZE // 2), int(spawn_y))
+                        enemy.spawn_timer = enemy.spawn_cooldown
+
+                use_gravity = enemy.enemy_type != "Cookie"
+                if use_gravity:
                     enemy.vy += GRAVITY * dt
-                enemy.vy, enemy.on_ground = self.move_and_collide(
-                    enemy.rect,
-                    enemy.vx,
-                    enemy.vy,
-                    level.solids,
-                    dt,
-                    allow_step=False,
-                )
+                enemy.vy, enemy.on_ground = move_and_collide(enemy.rect, enemy.vx, enemy.vy, level.solids, dt, allow_step=False)
 
             for player in players_here:
                 for enemy in level.enemies:
@@ -1283,140 +690,112 @@ class DungeonGameServer:
                         player.vy = -200
 
             for player in players_here:
-                for projectile in player.projectiles:
-                    projectile.update(dt)
-
-                alive_projectiles: list[SimProjectile] = []
-                for projectile in player.projectiles:
-                    if projectile.ttl <= 0:
+                for proj in player.projectiles:
+                    proj.update(dt)
+                alive: list[ProjectileState] = []
+                for proj in player.projectiles:
+                    if proj.ttl <= 0:
                         continue
-
-                    r = projectile.rect
+                    r = proj.rect
                     if r.right < 0 or r.left > level.width or r.bottom < 0 or r.top > level.height:
                         continue
                     if any(r.colliderect(s) for s in level.solids):
                         continue
-
-                    hit_enemy = False
+                    hit = False
                     for enemy in level.enemies:
                         if r.colliderect(enemy.rect):
                             enemy.hp -= 1
-                            hit_enemy = True
+                            hit = True
                             break
-                    if hit_enemy:
-                        continue
+                    if not hit:
+                        alive.append(proj)
+                player.projectiles = alive
 
-                    alive_projectiles.append(projectile)
+            level.enemies = [e for e in level.enemies if e.hp > 0]
 
-                player.projectiles = alive_projectiles
-
-            level.enemies = [enemy for enemy in level.enemies if enemy.hp > 0]
-
-            for projectile in level.enemy_projectiles:
-                projectile.update(dt)
-
-            alive_enemy_projectiles: list[SimProjectile] = []
-            for projectile in level.enemy_projectiles:
-                if projectile.ttl <= 0:
+            for proj in level.enemy_projectiles:
+                proj.update(dt)
+            alive_enemy: list[ProjectileState] = []
+            for proj in level.enemy_projectiles:
+                if proj.ttl <= 0:
                     continue
-
-                r = projectile.rect
+                r = proj.rect
                 if r.right < 0 or r.left > level.width or r.bottom < 0 or r.top > level.height:
                     continue
                 if any(r.colliderect(s) for s in level.solids):
                     continue
-
-                hit_player = False
+                hit = False
                 for player in players_here:
                     if r.colliderect(player.hitbox):
                         if MODE != 1:
                             player.hp -= 1
-                        hit_player = True
+                        hit = True
                         break
-                if hit_player:
-                    continue
-
-                alive_enemy_projectiles.append(projectile)
-
-            level.enemy_projectiles = alive_enemy_projectiles
+                if not hit:
+                    alive_enemy.append(proj)
+            level.enemy_projectiles = alive_enemy
 
             for player in players_here:
                 if player.hp <= 0:
                     player.dead = True
                     player.projectiles.clear()
 
-    def apply_client_message(self, player_id: int, msg: dict) -> None:
-        """Parse and store one player input payload from the network."""
+    def apply_client_message(self, player_id: int, msg: dict):
         inp = self.inputs.get(player_id)
         if inp is None:
             return
-
         inp.left = bool(msg.get("left", False))
         inp.right = bool(msg.get("right", False))
         inp.jump = bool(msg.get("jump", False))
         inp.shoot = bool(msg.get("shoot", False))
         inp.restart = bool(msg.get("restart", False))
-
         player = self.players.get(player_id)
         default_x = player.hitbox.centerx if player else 0
         default_y = player.hitbox.centery if player else 0
         try:
             inp.aim_x = float(msg.get("aim_x", default_x))
-        except (TypeError, ValueError):
+        except Exception:
             inp.aim_x = float(default_x)
         try:
             inp.aim_y = float(msg.get("aim_y", default_y))
-        except (TypeError, ValueError):
+        except Exception:
             inp.aim_y = float(default_y)
 
-    def apply_lobby_message(self, player_id: int, msg: dict) -> None:
-        """Apply username/skin/ready updates when the session is in lobby phase."""
+    def apply_lobby_message(self, player_id: int, msg: dict):
         player = self.players.get(player_id)
-        if player is None:
+        if player is None or self.session_phase() != "lobby":
             return
-        if self.session_phase() != "lobby":
-            return
-
         username_raw = str(msg.get("username", "")).strip()
         if username_raw:
             player.username = username_raw[:20]
-
         skin_raw = str(msg.get("skin", "")).strip()
         if skin_raw in self.available_skins:
             player.skin = skin_raw
-
         player.ready = bool(msg.get("ready", False))
 
     def build_snapshot(self, player_id: int) -> dict:
-        """Build the per-player world snapshot payload sent each tick."""
         player = self.players[player_id]
         snapshot_level = player.current_level
         spectating_player_id = None
         if player.dead and not player.won:
             for pid, other in sorted(self.players.items()):
-                if pid == player_id:
-                    continue
-                if not other.dead:
+                if pid != player_id and not other.dead:
                     spectating_player_id = pid
                     snapshot_level = other.current_level
                     break
 
-        local_level = self.get_or_create_level_state(snapshot_level)
-        chest_interaction_rect = self.get_chest_interaction_rect(local_level.chest_rect)
-        can_interact_with_chest = (
+        level = self.ensure_level(snapshot_level)
+        chest_rect = self.chest_interaction_rect(level.chest_rect)
+        can_interact_chest = (
             (not player.dead)
             and player.current_level == snapshot_level
-            and player.hitbox.colliderect(chest_interaction_rect)
-            and player_id not in local_level.chest_claimed_by
+            and player.hitbox.colliderect(chest_rect)
+            and player_id not in level.chest_claimed_by
         )
 
         players_payload = []
         for pid, other in sorted(self.players.items()):
-            if other.current_level == snapshot_level:
-                projectiles = [{"x": projectile.x, "y": projectile.y, "radius": projectile.radius} for projectile in other.projectiles]
-            else:
-                projectiles = []
-
+            projs = [{"x": p.x, "y": p.y, "radius": p.radius} for p in other.projectiles] if other.current_level == snapshot_level else []
             players_payload.append(
                 {
                     "id": pid,
@@ -1436,28 +815,25 @@ class DungeonGameServer:
                     "current_level": other.current_level,
                     "chest_event_id": other.chest_event_id,
                     "chest_event_level": other.chest_event_level,
-                    "projectiles": projectiles,
+                    "projectiles": projs,
                 }
             )
 
         enemies_payload = [
             {
-                "id": enemy.enemy_id,
-                "type": enemy.enemy_type,
-                "x": enemy.rect.x,
-                "y": enemy.rect.y,
-                "w": enemy.rect.w,
-                "h": enemy.rect.h,
-                "vx": enemy.vx,
-                "hp": enemy.hp,
-                "max_hp": enemy.max_hp,
+                "id": e.enemy_id,
+                "type": e.enemy_type,
+                "x": e.rect.x,
+                "y": e.rect.y,
+                "w": e.rect.w,
+                "h": e.rect.h,
+                "vx": e.vx,
+                "hp": e.hp,
+                "max_hp": e.max_hp,
             }
-            for enemy in local_level.enemies
+            for e in level.enemies
         ]
-        enemy_projectiles_payload = [
-            {"x": projectile.x, "y": projectile.y, "radius": projectile.radius}
-            for projectile in local_level.enemy_projectiles
-        ]
+        enemy_projectiles_payload = [{"x": p.x, "y": p.y, "radius": p.radius} for p in level.enemy_projectiles]
 
         return {
             "type": "state",
@@ -1465,25 +841,24 @@ class DungeonGameServer:
             "you": player_id,
             "spectating_player_id": spectating_player_id,
             "session": {
-                "id": self.session_id,
                 "connected_players": len(self.players),
                 "required_players": self.max_players,
                 "ready": self.match_started or self.all_players_ready(),
                 "phase": self.session_phase(),
                 "available_skins": self.available_skins,
             },
-            "level_size": {"w": local_level.width, "h": local_level.height},
+            "level_size": {"w": level.width, "h": level.height},
             "players": players_payload,
             "world": {
                 "current_level": snapshot_level,
                 "chest": {
-                    "x": local_level.chest_rect.x,
-                    "y": local_level.chest_rect.y,
-                    "w": local_level.chest_rect.w,
-                    "h": local_level.chest_rect.h,
-                    "open": local_level.chest_open,
-                    "can_interact": can_interact_with_chest,
-                    "claimed_by_you": player_id in local_level.chest_claimed_by,
+                    "x": level.chest_rect.x,
+                    "y": level.chest_rect.y,
+                    "w": level.chest_rect.w,
+                    "h": level.chest_rect.h,
+                    "open": level.chest_open,
+                    "can_interact": can_interact_chest,
+                    "claimed_by_you": player_id in level.chest_claimed_by,
                 },
                 "enemies": enemies_payload,
                 "enemy_projectiles": enemy_projectiles_payload,
@@ -1491,12 +866,11 @@ class DungeonGameServer:
             },
         }
 
-    async def send_json(self, conn: asyncio.StreamWriter, payload: dict) -> None:
-        raw = json.dumps(payload, separators=(",", ":"))
-        conn.write((raw + "\n").encode("utf-8"))
+    async def send_json(self, conn: asyncio.StreamWriter, payload: dict):
+        conn.write((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
         await conn.drain()
 
-    async def remove_player(self, player_id: int) -> None:
+    async def remove_player(self, player_id: int):
         self.players.pop(player_id, None)
         self.inputs.pop(player_id, None)
         conn = self.writers.pop(player_id, None)
@@ -1508,46 +882,32 @@ class DungeonGameServer:
         if not self.players:
             self.match_started = False
             self.reset_dynamic_world()
-            return
+        else:
+            self.reset_players_for_lobby()
 
-        self.reset_players_for_lobby()
-
-    async def stream_state_to_player(self, player_id: int, writer: asyncio.StreamWriter) -> None:
-        if player_id not in self.players:
-            return
-        try:
-            await self.send_json(writer, self.build_snapshot(player_id))
-        except Exception:
-            await self.remove_player(player_id)
-
-    async def game_loop(self) -> None:
+    async def game_loop(self):
         tick_dt = 1.0 / FPS
         while True:
-            started = time.perf_counter()
-
             if (not self.match_started) and self.all_players_ready():
                 self.start_match()
-
             if self.match_started and self.players_connected():
                 self.step_players(tick_dt)
                 self.step_levels(tick_dt)
-                if (
-                    self.match_started
-                    and self.players
-                    and all(p.dead for p in self.players.values())
-                    and all(not p.won for p in self.players.values())
-                ):
+                if self.players and all(p.dead for p in self.players.values()) and all(not p.won for p in self.players.values()):
                     self.reset_players_for_lobby()
 
-            tasks = [self.stream_state_to_player(player_id, writer) for player_id, writer in list(self.writers.items())]
-            if tasks:
-                await asyncio.gather(*tasks)
+            for pid, writer in list(self.writers.items()):
+                if pid not in self.players:
+                    continue
+                try:
+                    await self.send_json(writer, self.build_snapshot(pid))
+                except Exception:
+                    await self.remove_player(pid)
 
             self.tick += 1
-            elapsed = time.perf_counter() - started
-            await asyncio.sleep(max(0.0, tick_dt - elapsed))
+            await asyncio.sleep(tick_dt)
 
-    async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         if not self.players:
             self.match_started = False
             self.reset_dynamic_world()
@@ -1572,34 +932,18 @@ class DungeonGameServer:
                     "player_id": player_id,
                     "tick_rate": FPS,
                     "max_players": self.max_players,
-                    "session_id": self.session_id,
                 },
             )
 
         try:
-            invalid_packets = 0
             while True:
                 line = await reader.readline()
                 if not line:
                     break
-
                 try:
-                    decoded = line.decode("utf-8")
-                except UnicodeDecodeError:
-                    invalid_packets += 1
-                    if invalid_packets >= 3:
-                        break
+                    msg = json.loads(line.decode("utf-8"))
+                except Exception:
                     continue
-
-                try:
-                    msg = json.loads(decoded)
-                except json.JSONDecodeError:
-                    invalid_packets += 1
-                    if invalid_packets >= 3:
-                        break
-                    continue
-
-                invalid_packets = 0
                 msg_type = msg.get("type")
                 if msg_type == "input":
                     self.apply_client_message(player_id, msg)
@@ -1608,11 +952,9 @@ class DungeonGameServer:
         finally:
             await self.remove_player(player_id)
 
-    async def run(self) -> None:
+    async def run(self):
         tcp_server = await asyncio.start_server(self.handle_client, self.host, self.port)
-        tcp_targets = ", ".join(str(sock.getsockname()) for sock in (tcp_server.sockets or []))
-        print(f"Dungeon TCP server listening on {tcp_targets}")
-
+        print("Dungeon TCP server listening on " + ", ".join(str(sock.getsockname()) for sock in (tcp_server.sockets or [])))
         tick_task = asyncio.create_task(self.game_loop())
         try:
             await tcp_server.serve_forever()
@@ -1623,4 +965,3 @@ class DungeonGameServer:
             tick_task.cancel()
             with suppress(asyncio.CancelledError):
                 await tick_task
-

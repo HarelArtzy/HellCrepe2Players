@@ -1,13 +1,13 @@
-﻿import argparse
+import argparse
+import socket
 from pathlib import Path
 
 import pygame
 
-from classes import Player
+from classes import Player, TcpJsonConnection
 from functions import (
     build_amrany_levels,
     calc_view,
-    connect_with_feedback,
     draw_tmx,
     level_key,
     load_player_preview,
@@ -16,7 +16,6 @@ from functions import (
     normalize_username,
     poll_network_messages,
     render_center_text,
-    show_connection_error_screen,
 )
 from settings import BASE_H, BASE_W, FPS, MAP_DICT, STARTING_LVL
 
@@ -28,7 +27,6 @@ UI_H = 720
 
 
 def main(host: str, port: int) -> None:
-    """Run the full client game loop: input, networking, state sync, and rendering."""
     pygame.init()
     window = pygame.display.set_mode((WINDOW_W, WINDOW_H))
     pygame.display.set_caption("HellCrepe Multiplayer Client")
@@ -51,27 +49,22 @@ def main(host: str, port: int) -> None:
     lobby_music_loaded = False
     lobby_music_playing = False
 
-    connection, connect_error = connect_with_feedback(
-        window,
-        overlay_font,
-        info_font,
-        host,
-        port,
-        timeout_s=8.0,
-    )
-    if connection is None:
-        show_connection_error_screen(
-            window,
-            overlay_font,
-            info_font,
-            host,
-            port,
-            connect_error or "Unknown connection error.",
-        )
+    try:
+        connection = TcpJsonConnection(socket.create_connection((host, port), timeout=5.0))
+    except OSError:
+        surface = pygame.Surface((UI_W, UI_H))
+        surface.fill((15, 15, 20))
+        render_center_text(surface, overlay_font, "Could not connect to server.", (255, 130, 130))
+        scale, off_x, off_y, scaled_w, scaled_h = calc_view(UI_W, UI_H, WINDOW_W, WINDOW_H)
+        del scale
+        window.fill((0, 0, 0))
+        window.blit(pygame.transform.scale(surface, (scaled_w, scaled_h)), (off_x, off_y))
+        pygame.display.flip()
+        pygame.time.wait(2000)
         pygame.quit()
         return
 
-    net_state = {"player_id": None, "latest_state": None, "error": None, "session_id": None}
+    net_state = {"player_id": None, "latest_state": None, "error": None}
 
     visual_cache: dict[int, tuple] = {}
     current_level = STARTING_LVL
@@ -185,9 +178,6 @@ def main(host: str, port: int) -> None:
         if latest_state is not None:
             players = latest_state.get("players", [])
             session = latest_state.get("session", {})
-            server_session_id = str(session.get("id", "")).strip()
-            if server_session_id:
-                net_state["session_id"] = server_session_id
             spectating_player_id = latest_state.get("spectating_player_id")
             if player_id is None:
                 player_id = latest_state.get("you")
@@ -336,8 +326,6 @@ def main(host: str, port: int) -> None:
         screen.fill((15, 15, 20))
         if tmx is not None:
             draw_tmx(screen, tmx)
-        session_id_display = str(net_state.get("session_id") or "").strip()
-
         if local_player is not None and session_phase == "playing":
             for p_data in players:
                 if int(p_data.get("current_level", -1)) != current_level:
@@ -371,7 +359,7 @@ def main(host: str, port: int) -> None:
                 evx = float(enemy.get("vx", 0.0))
 
                 sprite = enemy_sprites.get(enemy_id)
-                if sprite is None or sprite.__class__.__name__ != enemy_type:
+                if sprite is None or getattr(sprite, "enemy_type", "") != enemy_type:
                     sprite = make_enemy_sprite(enemy_type, ex, ey)
                     if sprite is None:
                         fallback_rect = pygame.Rect(ex, ey, ew, eh)
@@ -620,9 +608,6 @@ def main(host: str, port: int) -> None:
 
             controls_text = lobby_small_font.render("Type username  |  Left/Right: skin  |  Enter: ready", True, (190, 190, 205))
             screen.blit(controls_text, controls_text.get_rect(center=(sw // 2, card.bottom - 28)))
-            if session_id_display:
-                sid_text = lobby_small_font.render(f"Session ID: {session_id_display}", True, (180, 180, 205))
-                screen.blit(sid_text, (card.x + 22, card.bottom - 36))
         else:
             screen.fill((0, 0, 0))
             wait_msg = "Waiting for server state..."
@@ -630,8 +615,6 @@ def main(host: str, port: int) -> None:
                 wait_msg = net_state["error"]
             elif local_player is not None and session_phase == "waiting":
                 wait_msg = f"Waiting for Player 2 to join... ({connected_players}/{required_players})"
-            if session_id_display:
-                wait_msg += f"\nSession ID: {session_id_display}"
             render_center_text(screen, overlay_font, wait_msg, (235, 235, 235))
 
         window.fill((0, 0, 0))
@@ -647,4 +630,5 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=9000, help="Server port")
     args = parser.parse_args()
     main(args.host, args.port)
+
 
