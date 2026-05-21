@@ -1,22 +1,23 @@
-# main.py
-# /// script
-# dependencies = [
-#   "pygame-ce",
-#   "pytmx",
-# ]
-# ///
-
-import argparse
-import json
-import socket
-import time
-from contextlib import suppress
+﻿import argparse
 from pathlib import Path
 
 import pygame
 
-from classes import Amrany, Cookie, Pancake, Player, Waffle
-from functions import calc_view, draw_tmx, load_level
+from classes import Player
+from functions import (
+    build_amrany_levels,
+    calc_view,
+    connect_with_feedback,
+    draw_tmx,
+    level_key,
+    load_player_preview,
+    load_visual_level,
+    make_enemy_sprite,
+    normalize_username,
+    poll_network_messages,
+    render_center_text,
+    show_connection_error_screen,
+)
 from settings import BASE_H, BASE_W, FPS, MAP_DICT, STARTING_LVL
 
 
@@ -26,258 +27,8 @@ UI_W = 1280
 UI_H = 720
 
 
-def level_key(level: int) -> str:
-    return f"lvl{level}"
-
-
-class TcpJsonConnection:
-    def __init__(self, sock: socket.socket):
-        self.sock = sock
-        self.sock.setblocking(False)
-        self.closed = False
-        self._recv_buffer = b""
-        self._send_buffer = b""
-
-    def queue_json(self, payload: dict) -> None:
-        self._send_buffer += (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
-
-    def flush(self) -> None:
-        while self._send_buffer and not self.closed:
-            try:
-                sent = self.sock.send(self._send_buffer)
-            except (BlockingIOError, InterruptedError):
-                break
-            except OSError as exc:
-                self.closed = True
-                raise ConnectionError(str(exc)) from exc
-
-            if sent <= 0:
-                self.closed = True
-                raise ConnectionError("Socket closed while sending.")
-            self._send_buffer = self._send_buffer[sent:]
-
-    def poll_messages(self) -> list[str]:
-        messages: list[str] = []
-
-        while not self.closed:
-            try:
-                chunk = self.sock.recv(4096)
-            except (BlockingIOError, InterruptedError):
-                break
-            except OSError as exc:
-                self.closed = True
-                raise ConnectionError(str(exc)) from exc
-
-            if not chunk:
-                self.closed = True
-                break
-
-            self._recv_buffer += chunk
-
-        while True:
-            newline_idx = self._recv_buffer.find(b"\n")
-            if newline_idx < 0:
-                break
-            line = self._recv_buffer[:newline_idx]
-            self._recv_buffer = self._recv_buffer[newline_idx + 1 :]
-            if not line:
-                continue
-            messages.append(line.decode("utf-8", errors="replace"))
-
-        return messages
-
-    def close(self) -> None:
-        if self.closed and self.sock.fileno() < 0:
-            return
-        with suppress(OSError):
-            self.sock.shutdown(socket.SHUT_RDWR)
-        with suppress(OSError):
-            self.sock.close()
-        self.closed = True
-
-
-def apply_network_message(msg: dict, net_state: dict) -> None:
-    msg_type = msg.get("type")
-    if msg_type == "welcome":
-        net_state["player_id"] = msg.get("player_id")
-        net_state["session_id"] = msg.get("session_id")
-    elif msg_type == "state":
-        net_state["latest_state"] = msg
-    elif msg_type == "error":
-        net_state["error"] = msg.get("message", "Server error.")
-
-
-def poll_network_messages(conn: TcpJsonConnection, net_state: dict) -> None:
-    try:
-        lines = conn.poll_messages()
-    except ConnectionError:
-        net_state["error"] = "Disconnected from server."
-        return
-
-    for line in lines:
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        apply_network_message(msg, net_state)
-
-    if conn.closed and net_state.get("error") is None:
-        net_state["error"] = "Disconnected from server."
-
-
-def load_visual_level(level: int, cache: dict[int, tuple]) -> tuple | None:
-    if level in cache:
-        return cache[level]
-
-    key = level_key(level)
-    if key not in MAP_DICT:
-        return None
-
-    cfg = MAP_DICT[key]
-    base_w, base_h = cfg.get("window", (BASE_W, BASE_H))
-    tmx, _ = load_level(cfg["map"] + ".tmx")
-    cache[level] = (tmx, base_w, base_h)
-    return cache[level]
-
-
-def render_center_text(surface: pygame.Surface, font: pygame.font.Font, message: str, color: tuple[int, int, int]) -> None:
-    lines = message.splitlines() or [message]
-    rendered = [font.render(line, True, color) for line in lines]
-    line_h = font.get_linesize()
-    total_h = line_h * len(rendered)
-    y = (surface.get_height() - total_h) // 2
-    for text_surface in rendered:
-        x = (surface.get_width() - text_surface.get_width()) // 2
-        surface.blit(text_surface, (x, y))
-        y += line_h
-
-
-def present_scaled(window: pygame.Surface, surface: pygame.Surface) -> None:
-    scale, off_x, off_y, scaled_w, scaled_h = calc_view(
-        surface.get_width(),
-        surface.get_height(),
-        WINDOW_W,
-        WINDOW_H,
-    )
-    window.fill((0, 0, 0))
-    window.blit(pygame.transform.scale(surface, (scaled_w, scaled_h)), (off_x, off_y))
-    pygame.display.flip()
-
-
-def show_connection_error_screen(
-    window: pygame.Surface,
-    title_font: pygame.font.Font,
-    body_font: pygame.font.Font,
-    host: str,
-    port: int,
-    reason: str,
-) -> None:
-    clock = pygame.time.Clock()
-    while True:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return
-            if event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE):
-                return
-
-        surface = pygame.Surface((UI_W, UI_H))
-        surface.fill((15, 15, 20))
-
-        title = title_font.render("Can't connect to server", True, (255, 130, 130))
-        endpoint = body_font.render(f"{host}:{port}", True, (230, 230, 230))
-        details = body_font.render(reason[:120], True, (200, 200, 210))
-        hint = body_font.render("Press Esc or Enter to close", True, (170, 170, 185))
-
-        surface.blit(title, title.get_rect(center=(UI_W // 2, UI_H // 2 - 90)))
-        surface.blit(endpoint, endpoint.get_rect(center=(UI_W // 2, UI_H // 2 - 30)))
-        surface.blit(details, details.get_rect(center=(UI_W // 2, UI_H // 2 + 20)))
-        surface.blit(hint, hint.get_rect(center=(UI_W // 2, UI_H // 2 + 80)))
-
-        present_scaled(window, surface)
-        clock.tick(60)
-
-
-def connect_with_feedback(
-    window: pygame.Surface,
-    title_font: pygame.font.Font,
-    body_font: pygame.font.Font,
-    host: str,
-    port: int,
-    timeout_s: float = 8.0,
-) -> tuple[TcpJsonConnection | None, str | None]:
-    endpoint = f"{host}:{port}"
-    started = time.perf_counter()
-    last_error: OSError | None = None
-    while True:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return None, "Connection cancelled by user."
-
-        elapsed = time.perf_counter() - started
-        if elapsed >= timeout_s:
-            if last_error is None:
-                return None, f"{endpoint} | Timeout after {timeout_s:.1f}s"
-            return None, f"{endpoint} | {last_error.__class__.__name__}: {last_error}"
-
-        try:
-            sock = socket.create_connection((host, port), timeout=0.35)
-            return TcpJsonConnection(sock), None
-        except OSError as exc:
-            last_error = exc
-
-        dots = "." * (int(elapsed * 3) % 4)
-        surface = pygame.Surface((UI_W, UI_H))
-        surface.fill((15, 15, 20))
-        render_center_text(surface, title_font, f"Connecting to {endpoint}{dots}", (235, 235, 235))
-        elapsed_text = body_font.render(f"Elapsed: {elapsed:.1f}s", True, (180, 180, 195))
-        surface.blit(elapsed_text, elapsed_text.get_rect(center=(UI_W // 2, UI_H // 2 + 62)))
-        present_scaled(window, surface)
-        pygame.time.wait(50)
-
-
-def make_enemy_sprite(enemy_type: str, x: int, y: int):
-    if enemy_type == "Pancake":
-        return Pancake(x, y)
-    if enemy_type == "Waffle":
-        return Waffle(x, y)
-    if enemy_type == "Cookie":
-        return Cookie(x, y)
-    if enemy_type == "Amrany":
-        return Amrany(x, y)
-    return None
-
-
-def normalize_username(raw: str, fallback: str) -> str:
-    cleaned = raw.strip()
-    return cleaned[:20] if cleaned else fallback
-
-
-def load_player_preview(
-    skin_name: str,
-    preview_cache: dict[tuple[str, int], pygame.Surface],
-    preview_size: int = 96,
-) -> pygame.Surface:
-    cache_key = (skin_name, preview_size)
-    cached = preview_cache.get(cache_key)
-    if cached is not None:
-        return cached
-
-    root = Path(__file__).resolve().parent
-    if skin_name != "default":
-        frame_path = root / "assets" / "player" / skin_name / "player_frame1.png"
-    else:
-        frame_path = root / "assets" / "player" / "player_frame1.png"
-
-    if not frame_path.exists():
-        frame_path = root / "assets" / "player" / "player_frame1.png"
-
-    image = pygame.image.load(str(frame_path)).convert_alpha()
-    scaled = pygame.transform.scale(image, (preview_size, preview_size))
-    preview_cache[cache_key] = scaled
-    return scaled
-
-
 def main(host: str, port: int) -> None:
+    """Run the full client game loop: input, networking, state sync, and rendering."""
     pygame.init()
     window = pygame.display.set_mode((WINDOW_W, WINDOW_H))
     pygame.display.set_caption("HellCrepe Multiplayer Client")
@@ -289,6 +40,7 @@ def main(host: str, port: int) -> None:
     info_font = pygame.font.SysFont("arial", 18)
     overlay_font = pygame.font.SysFont("arial", 28, bold=True)
     boss_font = pygame.font.SysFont("arial", 12, bold=True)
+    boss_name_font = pygame.font.SysFont("arial", 14, bold=True)
     lobby_title_font = pygame.font.SysFont("arial", 44, bold=True)
     lobby_body_font = pygame.font.SysFont("arial", 28)
     lobby_small_font = pygame.font.SysFont("arial", 22)
@@ -351,6 +103,13 @@ def main(host: str, port: int) -> None:
     pause_menu_open = False
     pause_menu_index = 0
     pause_menu_options = ["Resume", "Restart Session", "Quit"]
+    win_menu_open = False
+    win_menu_index = 0
+    win_menu_acknowledged = False
+    win_menu_options = ["Restart", "Quit"]
+    amrany_levels = build_amrany_levels()
+    amrany_seen_alive = False
+    amrany_defeated = False
     running = True
 
     while running:
@@ -364,6 +123,22 @@ def main(host: str, port: int) -> None:
                 running = False
             elif event.type == pygame.KEYDOWN:
                 if session_phase == "playing":
+                    if win_menu_open:
+                        if event.key in (pygame.K_UP, pygame.K_w):
+                            win_menu_index = (win_menu_index - 1) % len(win_menu_options)
+                        elif event.key in (pygame.K_DOWN, pygame.K_s):
+                            win_menu_index = (win_menu_index + 1) % len(win_menu_options)
+                        elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                            selected = win_menu_options[win_menu_index]
+                            if selected == "Restart":
+                                restart_requested = True
+                                win_menu_open = False
+                                win_menu_acknowledged = True
+                                amrany_seen_alive = False
+                                amrany_defeated = False
+                            elif selected == "Quit":
+                                running = False
+                        continue
                     if pause_menu_open:
                         if event.key in (pygame.K_UP, pygame.K_w):
                             pause_menu_index = (pause_menu_index - 1) % len(pause_menu_options)
@@ -447,7 +222,6 @@ def main(host: str, port: int) -> None:
                         lobby_skin_index = 0
                     lobby_initialized = True
                 elif session_phase != "lobby":
-                    # Keep local controls inactive outside lobby.
                     lobby_ready = server_ready
 
                 world = latest_state.get("world", {})
@@ -496,6 +270,10 @@ def main(host: str, port: int) -> None:
             chest_overlay_index = 0
             chest_overlay_wait_release = True
             pause_menu_open = False
+            win_menu_open = False
+            win_menu_acknowledged = False
+            amrany_seen_alive = False
+            amrany_defeated = False
 
         target_w, target_h = (base_w, base_h) if session_phase == "playing" else (UI_W, UI_H)
         if screen.get_width() != target_w or screen.get_height() != target_h:
@@ -539,7 +317,7 @@ def main(host: str, port: int) -> None:
                         }
                     )
                 else:
-                    input_locked = (session_phase != "playing") or chest_overlay_active or pause_menu_open
+                    input_locked = (session_phase != "playing") or chest_overlay_active or pause_menu_open or win_menu_open
                     input_payload = {
                         "type": "input",
                         "left": bool(keys[pygame.K_a] or keys[pygame.K_LEFT]) and (not input_locked),
@@ -633,6 +411,23 @@ def main(host: str, port: int) -> None:
 
                 hp_text = boss_font.render(f"{hp}/{max_hp}", True, (255, 255, 255))
                 screen.blit(hp_text, hp_text.get_rect(center=(x + bar_w // 2, y + bar_h // 2)))
+                boss_name = boss_name_font.render("Amrany - Devourer Of Crepes", True, (235, 235, 235))
+                screen.blit(boss_name, boss_name.get_rect(center=(x + bar_w // 2, y + bar_h + 12)))
+
+            is_amrany_level = current_level in amrany_levels
+            if is_amrany_level:
+                if boss_enemy is not None:
+                    amrany_seen_alive = True
+                    amrany_defeated = False
+                elif amrany_seen_alive and (not amrany_defeated):
+                    amrany_defeated = True
+                    if not win_menu_acknowledged:
+                        win_menu_open = True
+                        win_menu_index = 0
+                        pause_menu_open = False
+            elif not win_menu_open:
+                amrany_seen_alive = False
+                amrany_defeated = False
 
             for p_data in players:
                 if int(p_data.get("current_level", -1)) != current_level:
@@ -683,7 +478,8 @@ def main(host: str, port: int) -> None:
 
             if local_player.get("dead", False):
                 if local_player.get("won", False):
-                    msg = "You Won."
+                    if not win_menu_acknowledged:
+                        win_menu_open = True
                 else:
                     spectating_name = "teammate"
                     if spectating_player_id is not None:
@@ -691,14 +487,13 @@ def main(host: str, port: int) -> None:
                         if target is not None:
                             spectating_name = normalize_username(str(target.get("username", "")), f"P{spectating_player_id}")
                     msg = f"You Died.\nSpectating {spectating_name}.\nWaiting for other player to die."
-                render_center_text(screen, overlay_font, msg, (255, 255, 255))
+                    render_center_text(screen, overlay_font, msg, (255, 255, 255))
 
             if pause_menu_open:
                 shade = pygame.Surface((base_w, base_h), pygame.SRCALPHA)
                 shade.fill((0, 0, 0, 170))
                 screen.blit(shade, (0, 0))
 
-                # Keep pause menu fully visible even on short/wide level resolutions.
                 menu_margin = max(8, min(24, min(base_w, base_h) // 12))
                 menu_w = min(420, max(240, base_w - (menu_margin * 2)))
                 menu_h = min(220, max(130, base_h - (menu_margin * 2)))
@@ -726,6 +521,42 @@ def main(host: str, port: int) -> None:
 
                 for idx, option in enumerate(pause_menu_options):
                     color = (255, 220, 140) if idx == pause_menu_index else (220, 220, 230)
+                    text = info_font.render(option, True, color)
+                    option_y = option_y_positions[idx] if idx < len(option_y_positions) else panel.centery
+                    screen.blit(text, text.get_rect(center=(base_w // 2, option_y)))
+
+            if win_menu_open:
+                shade = pygame.Surface((base_w, base_h), pygame.SRCALPHA)
+                shade.fill((0, 0, 0, 170))
+                screen.blit(shade, (0, 0))
+
+                menu_margin = max(8, min(24, min(base_w, base_h) // 12))
+                menu_w = min(420, max(240, base_w - (menu_margin * 2)))
+                menu_h = min(220, max(130, base_h - (menu_margin * 2)))
+                menu_x = (base_w - menu_w) // 2
+                menu_y = (base_h - menu_h) // 2
+                panel = pygame.Rect(menu_x, menu_y, menu_w, menu_h)
+                radius = max(8, min(12, menu_h // 16))
+                pygame.draw.rect(screen, (25, 25, 35), panel, border_radius=radius)
+                pygame.draw.rect(screen, (100, 100, 140), panel, 2, border_radius=radius)
+
+                title = overlay_font.render("You Beat Amrany!", True, (240, 240, 250))
+                title_center_y = panel.y + max(16, menu_h // 8) + (title.get_height() // 2)
+                screen.blit(title, title.get_rect(center=(base_w // 2, title_center_y)))
+
+                option_h = info_font.get_height()
+                options_count = max(1, len(win_menu_options))
+                options_top = title_center_y + (title.get_height() // 2) + max(10, menu_h // 12) + (option_h // 2)
+                options_bottom = panel.bottom - max(16, menu_h // 9) - (option_h // 2)
+                if options_count == 1:
+                    option_y_positions = [((options_top + options_bottom) // 2)]
+                else:
+                    span = max(0, options_bottom - options_top)
+                    step = span / (options_count - 1)
+                    option_y_positions = [int(options_top + (idx * step)) for idx in range(options_count)]
+
+                for idx, option in enumerate(win_menu_options):
+                    color = (255, 220, 140) if idx == win_menu_index else (220, 220, 230)
                     text = info_font.render(option, True, color)
                     option_y = option_y_positions[idx] if idx < len(option_y_positions) else panel.centery
                     screen.blit(text, text.get_rect(center=(base_w // 2, option_y)))
@@ -793,7 +624,6 @@ def main(host: str, port: int) -> None:
                 sid_text = lobby_small_font.render(f"Session ID: {session_id_display}", True, (180, 180, 205))
                 screen.blit(sid_text, (card.x + 22, card.bottom - 36))
         else:
-            # Keep connection/waiting screens neutral instead of showing map tiles.
             screen.fill((0, 0, 0))
             wait_msg = "Waiting for server state..."
             if net_state.get("error"):
@@ -811,14 +641,10 @@ def main(host: str, port: int) -> None:
     connection.close()
     pygame.quit()
 
-
-def parse_args() -> argparse.Namespace:
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="HellCrepe multiplayer client")
     parser.add_argument("--host", default="127.0.0.1", help="Server host/IP")
     parser.add_argument("--port", type=int, default=9000, help="Server port")
-    return parser.parse_args()
-
-
-if __name__ == "__main__":
-    args = parse_args()
+    args = parser.parse_args()
     main(args.host, args.port)
+

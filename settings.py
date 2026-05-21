@@ -1,5 +1,4 @@
-# settings.py
-BASE_W, BASE_H = 53 * 16, 20 * 16
+﻿BASE_W, BASE_H = 53 * 16, 20 * 16
 FPS = 60
 
 GRAVITY = 2200.0
@@ -112,3 +111,4 @@ MAP_DICT = {
         "chest_reward": [],
     },
 }
+
