@@ -1,13 +1,19 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 
-from classes import DungeonGameServer
+from DungeonGameServer import DungeonGameServer
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="HellCrepe multiplayer game server")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+    parser = argparse.ArgumentParser(
+        description="HellCrepe multiplayer game server")
     parser.add_argument("--host", default="0.0.0.0", help="Host/IP to bind")
     parser.add_argument("--port", type=int, default=9000, help="TCP port")
     args = parser.parse_args()
@@ -17,4 +23,3 @@ if __name__ == "__main__":
         asyncio.run(server.run())
     except KeyboardInterrupt:
         pass
-

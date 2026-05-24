@@ -1,4 +1,4 @@
-﻿BASE_W, BASE_H = 53 * 16, 20 * 16
+BASE_W, BASE_H = 53 * 16, 20 * 16
 FPS = 60
 
 GRAVITY = 2200.0
@@ -32,7 +32,9 @@ MAP_DICT = {
         "end": (750, 70),
         "chest": (646, 45),
         "enemies": [("Pancake", (400, 100))],
-        "chest_msg": ["Chest:\n Increase fire rate by 25%!\n Press Space to continue"],
+        "chest_msg": [
+            "Chest:\n Increase fire rate by 25%!\n Press Space to continue",
+        ],
         "chest_reward": [("shoot_cooldown", "mul", 0.75)],
     },
     "lvl2": {
@@ -53,7 +55,11 @@ MAP_DICT = {
         "start": (60, 17 * 16),
         "end": (752, 128),
         "chest": (816, 64),
-        "enemies": [("Waffle", (400, 272)), ("Waffle", (300, 272)), ("Waffle", (575, 220))],
+        "enemies": [
+            ("Waffle", (400, 272)),
+            ("Waffle", (300, 272)),
+            ("Waffle", (575, 220)),
+        ],
         "chest_msg": [
             "Chest:\n Movement speed increased by 25%"
         ],
@@ -80,8 +86,14 @@ MAP_DICT = {
         "chest": (208, 70),
         "enemies": [],
         "chest_msg": [
-            'Mysterious Statue:\n "You are going to need\nthis when you face\nthe devourer of crepes"\n Press Space to continue',
-            "You gained an extra heart!"
+            (
+                "Mysterious Statue:\n"
+                ' "You are going to need\n'
+                "this when you face\n"
+                'the devourer of crepes"\n'
+                " Press Space to continue"
+            ),
+            "You gained an extra heart!",
         ],
         "chest_reward": [("max_hp", "add", 1), ("hp", "add", 1)],
         "chest_change_map": 1
@@ -111,4 +123,3 @@ MAP_DICT = {
         "chest_reward": [],
     },
 }
-
