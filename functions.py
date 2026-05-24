@@ -57,11 +57,6 @@ def load_level(path):
     return tmx, solids
 
 
-def level_key(level: int) -> str:
-    """Convert a numeric level index into the map dictionary key."""
-    return f"lvl{level}"
-
-
 def apply_network_message(msg: dict, net_state: dict) -> None:
     """Apply one parsed server message to the local network state."""
     msg_type = msg.get("type")
@@ -99,7 +94,7 @@ def load_visual_level(level: int, cache: dict[int, tuple]) -> tuple | None:
     if level in cache:
         return cache[level]
 
-    key = level_key(level)
+    key = f"lvl{level}"
     if key not in MAP_DICT:
         return None
 
@@ -126,11 +121,6 @@ def render_center_text(surface: pygame.Surface,
         x = (surface.get_width() - text_surface.get_width()) // 2
         surface.blit(text_surface, (x, y))
         y += line_h
-
-
-def make_enemy_sprite(enemy_type: str, x: int, y: int):
-    """Create an enemy sprite instance for a given enemy type and position."""
-    return EnemySprite(enemy_type, x, y)
 
 
 def normalize_username(raw: str, fallback: str) -> str:
@@ -433,7 +423,7 @@ def apply_latest_state(
                         local_player.get(
                             "current_level",
                             starting_level)))
-                cfg = MAP_DICT.get(level_key(chest_event_level), {})
+                cfg = MAP_DICT.get(f"lvl{chest_event_level}", {})
                 msgs = [
                     str(msg) for msg in cfg.get(
                         "chest_msg",
@@ -808,7 +798,7 @@ def render_playing_scene(
 
         sprite = enemy_sprites.get(enemy_id)
         if sprite is None or getattr(sprite, "enemy_type", "") != enemy_type:
-            sprite = make_enemy_sprite(enemy_type, ex, ey)
+            sprite = EnemySprite(enemy_type, ex, ey)
             if sprite is None:
                 fallback_rect = pygame.Rect(ex, ey, ew, eh)
                 pygame.draw.rect(screen, (220, 80, 80), fallback_rect)
