@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+MAX_HEADER_BYTES = 12
+MAX_FRAME_BYTES = 2_000_000
 
 
 def move_and_collide(
@@ -152,11 +154,6 @@ class DungeonGameServer:
         self.match_started = False
         self.tick = 0
 
-    @staticmethod
-    def level_key(level: int) -> str:
-        """Map a numeric level to the key used in MAP_DICT."""
-        return f"lvl{level}"
-
     def discover_skins(self) -> list[str]:
         """Discover available skin directories with required frame files."""
         base_dir = PROJECT_ROOT / "assets" / "player"
@@ -234,7 +231,7 @@ class DungeonGameServer:
 
         cached = self.level_cache.get(level)
         if cached is None:
-            cfg = MAP_DICT[self.level_key(level)]
+            cfg = MAP_DICT[f"lvl{level}"]
             width, height = cfg.get("window", (53 * 16, 20 * 16))
             end_x, end_y = cfg["end"]
             chest_x, chest_y = cfg["chest"]
@@ -247,7 +244,7 @@ class DungeonGameServer:
             self.level_cache[level] = cached
 
         solids, end_rect, chest_rect, width, height = cached
-        cfg = MAP_DICT[self.level_key(level)]
+        cfg = MAP_DICT[f"lvl{level}"]
         enemies: list[EnemyState] = []
         next_id = 1
         for enemy_name, (ex, ey) in cfg["enemies"]:
@@ -297,7 +294,7 @@ class DungeonGameServer:
 
     def reset_player(self, player: SimPlayer, carry_stats: bool):
         """Reset a player and optionally preserve upgraded stats."""
-        cfg = MAP_DICT[self.level_key(player.current_level)]
+        cfg = MAP_DICT[f"lvl{player.current_level}"]
         sx, sy = cfg["start"]
         if carry_stats:
             max_hp = player.max_hp
@@ -428,7 +425,7 @@ class DungeonGameServer:
                 continue
 
             level = self.ensure_level(player.current_level)
-            cfg = MAP_DICT[self.level_key(player.current_level)]
+            cfg = MAP_DICT[f"lvl{player.current_level}"]
 
             player.shoot_timer = max(0.0, player.shoot_timer - dt)
             player.hurt_timer = max(0.0, player.hurt_timer - dt)
@@ -477,7 +474,7 @@ class DungeonGameServer:
             if (not player.visual_advanced) and has_claimed and cfg.get(
                     "chest_change_map", False):
                 next_level = player.current_level + 1
-                if self.level_key(next_level) in MAP_DICT:
+                if f"lvl{next_level}" in MAP_DICT:
                     player.current_level = next_level
                     player.visual_advanced = True
                     player.projectiles.clear()
@@ -487,7 +484,7 @@ class DungeonGameServer:
             if (not player.visual_advanced) and len(
                     level.enemies) == 0 and cfg.get("cleared", False):
                 next_level = player.current_level + 1
-                if self.level_key(next_level) in MAP_DICT:
+                if f"lvl{next_level}" in MAP_DICT:
                     player.current_level = next_level
                     player.visual_advanced = True
                     player.locked = False
@@ -505,7 +502,7 @@ class DungeonGameServer:
                     not player.locked))
             if player.hitbox.colliderect(level.end_rect) and can_exit:
                 next_level = player.current_level + 1
-                if self.level_key(next_level) not in MAP_DICT:
+                if f"lvl{next_level}" not in MAP_DICT:
                     player.won = True
                     player.dead = True
                     continue
@@ -789,14 +786,30 @@ class DungeonGameServer:
 
     async def send_json(self, conn: asyncio.StreamWriter, payload: dict):
         """Serialize and send one JSON payload over an asyncio stream."""
-        conn.write(
-            (json.dumps(
-                payload,
-                separators=(
-                    ",",
-                    ":")) +
-                "\n").encode("utf-8"))
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        conn.write(f"{len(body)}#".encode("ascii") + body)
         await conn.drain()
+
+    async def read_json(self, reader: asyncio.StreamReader) -> dict:
+        """Read one length-prefixed JSON payload from the stream."""
+        header = await reader.readuntil(b"#")
+        if not header:
+            raise ValueError("Missing frame header")
+
+        header_digits = header[:-1]
+        if (
+            (not header_digits)
+            or (len(header_digits) > MAX_HEADER_BYTES)
+            or (not header_digits.isdigit())
+        ):
+            raise ValueError("Invalid frame header")
+
+        body_len = int(header_digits.decode("ascii"))
+        if body_len > MAX_FRAME_BYTES:
+            raise ValueError("Frame too large")
+
+        body = await reader.readexactly(body_len)
+        return json.loads(body.decode("utf-8"))
 
     async def remove_player(self, player_id: int):
         """Remove a player connection and reset/cleanup match state."""
@@ -886,11 +899,20 @@ class DungeonGameServer:
 
         try:
             while True:
-                line = await reader.readline()
-                if not line:
-                    break
                 try:
-                    msg = json.loads(line.decode("utf-8"))
+                    msg = await self.read_json(reader)
+                except asyncio.IncompleteReadError:
+                    break
+                except asyncio.LimitOverrunError:
+                    logger.warning(
+                        "Received oversized frame header from player %s",
+                        player_id)
+                    break
+                except ValueError:
+                    logger.warning(
+                        "Received invalid framed payload from player %s",
+                        player_id)
+                    break
                 except Exception:
                     logger.warning(
                         "Received invalid JSON from player %s", player_id)
