@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pygame
 
-from EnemyState import EnemyState
-from LevelState import LevelState
-from PlayerInput import PlayerInput
-from ProjectileState import ProjectileState
-from SimPlayer import SimPlayer
-from settings import (
+from src.classes.EnemyState import EnemyState
+from src.classes.LevelState import LevelState
+from src.classes.PlayerInput import PlayerInput
+from src.classes.ProjectileState import ProjectileState
+from src.classes.SimPlayer import SimPlayer
+from src.settings import (
     BASE_HEARTS,
     BASE_SHOOT_COOLDOWN,
     BULLET_SPEED,
@@ -40,7 +40,7 @@ from settings import (
 logger = logging.getLogger(__name__)
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MAX_HEADER_BYTES = 12
 MAX_FRAME_BYTES = 2_000_000
 
@@ -151,6 +151,7 @@ class DungeonGameServer:
                                      int]] = {}
         self.levels: dict[int, LevelState] = {}
         self.available_skins = self.discover_skins()
+        self.amrany_levels = self.build_amrany_levels()
         self.match_started = False
         self.tick = 0
 
@@ -173,6 +174,33 @@ class DungeonGameServer:
     def default_skin(self) -> str:
         """Return the default skin name used for new players."""
         return self.available_skins[0]
+
+    @staticmethod
+    def build_amrany_levels() -> set[int]:
+        """Return all level numbers that include an Amrany spawn."""
+        return {
+            int(str(level_name)[3:])
+            for level_name, cfg in MAP_DICT.items()
+            if str(level_name).startswith("lvl")
+            and any(
+                str(enemy_name) == "Amrany"
+                for enemy_name, _ in cfg.get("enemies", [])
+            )
+        }
+
+    def has_amrany_been_defeated(self) -> bool:
+        """Return True once any loaded Amrany level no longer has Amrany alive."""
+        if not self.match_started:
+            return False
+
+        for level_idx in self.amrany_levels:
+            level = self.levels.get(level_idx)
+            if level is None:
+                continue
+            if not any(enemy.enemy_type == "Amrany" for enemy in level.enemies):
+                return True
+
+        return any(player.won for player in self.players.values())
 
     def players_connected(self) -> bool:
         """Return whether enough players are connected to fill the match."""
@@ -656,7 +684,9 @@ class DungeonGameServer:
         inp.right = bool(msg.get("right", False))
         inp.jump = bool(msg.get("jump", False))
         inp.shoot = bool(msg.get("shoot", False))
-        inp.restart = bool(msg.get("restart", False))
+        # Latch restart until the simulation tick consumes it, so a brief
+        # True frame is not overwritten by subsequent False input packets.
+        inp.restart = inp.restart or bool(msg.get("restart", False))
         player = self.players.get(player_id)
         default_x = player.hitbox.centerx if player else 0
         default_y = player.hitbox.centery if player else 0
@@ -685,6 +715,7 @@ class DungeonGameServer:
     def build_snapshot(self, player_id: int) -> dict:
         """Build the world snapshot payload sent to one specific player."""
         player = self.players[player_id]
+        amrany_defeated = self.has_amrany_been_defeated()
         snapshot_level = player.current_level
         spectating_player_id = None
         if player.dead and not player.won:
@@ -769,6 +800,7 @@ class DungeonGameServer:
             "players": players_payload,
             "world": {
                 "current_level": snapshot_level,
+                "amrany_defeated": amrany_defeated,
                 "chest": {
                     "x": level.chest_rect.x,
                     "y": level.chest_rect.y,

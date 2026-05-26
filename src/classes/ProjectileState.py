@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pygame
 
-from settings import BULLET_RADIUS, BULLET_TTL
+from src.settings import BULLET_RADIUS, BULLET_TTL
 
 
 @dataclass

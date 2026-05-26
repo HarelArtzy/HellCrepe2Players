@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pygame
 
-from settings import ENEMY_SHOOT_COOLDOWN
+from src.settings import ENEMY_SHOOT_COOLDOWN
 
 
 @dataclass

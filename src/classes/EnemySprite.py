@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pygame
 
-from settings import ENEMY_SIZE
+from src.settings import ENEMY_SIZE
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class EnemySprite:
@@ -43,7 +48,7 @@ class EnemySprite:
         self.rect = pygame.Rect(x, y, w, h)
         self.frames = [
             pygame.transform.scale(
-                pygame.image.load(path).convert_alpha(),
+                pygame.image.load(str(PROJECT_ROOT / path)).convert_alpha(),
                 (w, h),
             )
             for path in paths

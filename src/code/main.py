@@ -1,11 +1,16 @@
 import argparse
 import logging
 from pathlib import Path
+import sys
 
 import pygame
 
-from Player import Player
-from functions import (
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.classes.Player import Player
+from src.code.functions import (
     apply_latest_state,
     build_amrany_levels,
     calc_view,
@@ -15,7 +20,7 @@ from functions import (
     ensure_frame_surface,
     handle_main_events,
     load_visual_level,
-    maybe_start_lobby_music,
+    should_start_lobby_music,
     poll_network_messages,
     present_frame,
     render_lobby_scene,
@@ -25,7 +30,8 @@ from functions import (
     send_client_message,
     update_chest_overlay_progress,
 )
-from settings import BASE_H, BASE_W, FPS, STARTING_LVL
+from src.env_config import CLIENT_SERVER_HOST, CLIENT_SERVER_PORT
+from src.settings import BASE_H, BASE_W, FPS, STARTING_LVL
 
 
 logger = logging.getLogger(__name__)
@@ -45,9 +51,9 @@ def main(host: str, port: int) -> None:
     clock = pygame.time.Clock()
 
     full_heart_img = pygame.image.load(
-        "assets/ui/full_heart.png").convert_alpha()
+        str(PROJECT_ROOT / "assets" / "ui" / "full_heart.png")).convert_alpha()
     broken_heart_img = pygame.image.load(
-        "assets/ui/broken_heart.png").convert_alpha()
+        str(PROJECT_ROOT / "assets" / "ui" / "broken_heart.png")).convert_alpha()
 
     info_font = pygame.font.SysFont("arial", 18)
     overlay_font = pygame.font.SysFont("arial", 28, bold=True)
@@ -58,7 +64,7 @@ def main(host: str, port: int) -> None:
     lobby_small_font = pygame.font.SysFont("arial", 22)
     lobby_arrow_font = pygame.font.SysFont("arial", 56, bold=True)
 
-    lobby_music_path = Path(__file__).resolve().parent / \
+    lobby_music_path = PROJECT_ROOT / \
         "assets" / "music" / "main_music.mp3"
     lobby_music_available = lobby_music_path.exists()
     lobby_music_loaded = False
@@ -124,6 +130,7 @@ def main(host: str, port: int) -> None:
     amrany_levels = build_amrany_levels()
     amrany_seen_alive = False
     amrany_defeated = False
+    amrany_server_defeated = False
     running = True
 
     while running:
@@ -220,12 +227,13 @@ def main(host: str, port: int) -> None:
         chest_overlay_index = state["chest_overlay_index"]
         chest_overlay_wait_release = state["chest_overlay_wait_release"]
         spectating_player_id = state["spectating_player_id"]
+        amrany_server_defeated = state["amrany_server_defeated"]
 
         (
             lobby_music_available,
             lobby_music_loaded,
             lobby_music_playing,
-        ) = maybe_start_lobby_music(
+        ) = should_start_lobby_music(
             session_phase,
             local_player,
             connected_players,
@@ -353,6 +361,7 @@ def main(host: str, port: int) -> None:
                 chest_overlay_messages,
                 chest_overlay_index,
                 amrany_levels,
+                amrany_server_defeated,
                 amrany_seen_alive,
                 amrany_defeated,
             )
@@ -396,7 +405,7 @@ if __name__ == "__main__":
     )
     parser = argparse.ArgumentParser(
         description="HellCrepe multiplayer client")
-    parser.add_argument("--host", default="127.0.0.1", help="Server host/IP")
-    parser.add_argument("--port", type=int, default=9000, help="Server port")
+    parser.add_argument("--host", default=CLIENT_SERVER_HOST, help="Server host/IP")
+    parser.add_argument("--port", type=int, default=CLIENT_SERVER_PORT, help="Server port")
     args = parser.parse_args()
     main(args.host, args.port)

@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 
 import pygame
 
-from EnemyState import EnemyState
-from ProjectileState import ProjectileState
+from src.classes.EnemyState import EnemyState
+from src.classes.ProjectileState import ProjectileState
 
 
 @dataclass

@@ -14,7 +14,7 @@ class Player:
         self.sprite_offset_y = -10
         self.skin_name = skin_name or "default"
 
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[2]
         if self.skin_name != "default":
             skin_dir = root / "assets" / "player" / self.skin_name
             paths = [

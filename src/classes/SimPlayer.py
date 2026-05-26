@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 
 import pygame
 
-from ProjectileState import ProjectileState
-from settings import BASE_HEARTS, BASE_SHOOT_COOLDOWN, MOVE_SPEED, STARTING_LVL
+from src.classes.ProjectileState import ProjectileState
+from src.settings import BASE_HEARTS, BASE_SHOOT_COOLDOWN, MOVE_SPEED, STARTING_LVL
 
 
 @dataclass

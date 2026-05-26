@@ -5,10 +5,11 @@ from pathlib import Path
 
 import pygame
 
-from EnemySprite import EnemySprite
-from Player import Player
-from TcpJsonConnection import TcpJsonConnection
-from settings import BASE_H, BASE_W, MAP_DICT
+from src.classes.EnemySprite import EnemySprite
+from src.classes.Player import Player
+from src.classes.TcpJsonConnection import TcpJsonConnection
+from src.code.ollama_crepe_name import generate_dungeon_fighter_crepe_name
+from src.settings import BASE_H, BASE_W, MAP_DICT
 
 
 logger = logging.getLogger(__name__)
@@ -140,7 +141,7 @@ def load_player_preview(
     if cached is not None:
         return cached
 
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[2]
     if skin_name != "default":
         frame_path = (
             root
@@ -281,7 +282,9 @@ def handle_main_events(
                     continue
 
             if session_phase == "lobby":
-                if event.key == pygame.K_RETURN:
+                if event.key == pygame.K_r:
+                    lobby_username = generate_dungeon_fighter_crepe_name()
+                elif event.key == pygame.K_RETURN:
                     lobby_ready = not lobby_ready
                 elif not lobby_ready:
                     if event.key == pygame.K_LEFT:
@@ -351,6 +354,7 @@ def apply_latest_state(
     latest_state = net_state.get("latest_state")
     local_player = None
     world = {}
+    amrany_server_defeated = False
     players: list[dict] = []
     player_id = net_state.get("player_id")
     session: dict = {}
@@ -400,6 +404,7 @@ def apply_latest_state(
                 lobby_ready = server_ready
 
             world = latest_state.get("world", {})
+            amrany_server_defeated = bool(world.get("amrany_defeated", False))
             render_level = int(
                 world.get(
                     "current_level",
@@ -437,6 +442,7 @@ def apply_latest_state(
     return {
         "local_player": local_player,
         "world": world,
+        "amrany_server_defeated": amrany_server_defeated,
         "players": players,
         "player_id": player_id,
         "session": session,
@@ -467,7 +473,7 @@ def apply_latest_state(
     }
 
 
-def maybe_start_lobby_music(
+def should_start_lobby_music(
     session_phase: str,
     local_player,
     connected_players: int,
@@ -479,14 +485,14 @@ def maybe_start_lobby_music(
     lobby_music_path: Path,
 ) -> tuple[bool, bool, bool]:
     """Start looping lobby music when lobby conditions are satisfied."""
-    should_start_lobby_music = (
+    _should_start_lobby_music = (
         session_phase == "lobby"
         and local_player is not None
         and connected_players >= required_players
         and net_state.get("error") is None
     )
     if (
-        should_start_lobby_music
+        _should_start_lobby_music
         and lobby_music_available
         and not lobby_music_playing
     ):
@@ -757,6 +763,7 @@ def render_playing_scene(
     chest_overlay_messages: list[str],
     chest_overlay_index: int,
     amrany_levels: set[int],
+    amrany_server_defeated: bool,
     amrany_seen_alive: bool,
     amrany_defeated: bool,
 ) -> tuple[dict[int, object], dict[int, Player], bool, bool, int, bool, bool]:
@@ -865,6 +872,16 @@ def render_playing_scene(
                     12)))
 
     is_amrany_level = current_level in amrany_levels
+    if amrany_server_defeated:
+        amrany_seen_alive = True
+        amrany_defeated = True
+        if not win_menu_acknowledged:
+            was_open = win_menu_open
+            win_menu_open = True
+            if not was_open:
+                win_menu_index = 0
+            pause_menu_open = False
+
     if is_amrany_level:
         if boss_enemy is not None:
             amrany_seen_alive = True
@@ -872,8 +889,10 @@ def render_playing_scene(
         elif amrany_seen_alive and (not amrany_defeated):
             amrany_defeated = True
             if not win_menu_acknowledged:
+                was_open = win_menu_open
                 win_menu_open = True
-                win_menu_index = 0
+                if not was_open:
+                    win_menu_index = 0
                 pause_menu_open = False
     elif not win_menu_open:
         amrany_seen_alive = False
@@ -1104,7 +1123,7 @@ def render_lobby_scene(
                 64)))
 
     controls_text = lobby_small_font.render(
-        "Type username  |  Left/Right: skin  |  Enter: ready", True,
+        "Type username  |  Left/Right: skin  |  R: AI name  |  Enter: ready", True,
         (190, 190, 205))
     screen.blit(
         controls_text,
