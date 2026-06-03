@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import pickle
+import select
 import socket
 from contextlib import suppress
 
@@ -15,112 +16,90 @@ MAX_FRAME_BYTES = 2_000_000
 
 class Protocol:
     def __init__(self, sock: socket.socket):
-        """Initialize a non-blocking TCP connection with internal buffers."""
+        """Initialize a blocking TCP connection for framed messages."""
         self.sock = sock
-        self.sock.setblocking(False)
+        self.sock.setblocking(True)
         self.closed = False
-        self._recv_buffer = b""
-        self._send_buffer = b""
 
-    def queue_message(self, payload: dict) -> None:
-        """Serialize and queue one pickled payload for transmission."""
+    def send_message(self, payload: dict) -> None:
+        """Serialize and send one pickled payload with len# framing."""
         body = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
         header = f"{len(body)}#".encode("ascii")
-        self._send_buffer += header + body
+        packet = header + body
+        try:
+            self.sock.sendall(packet)
+        except OSError as e:
+            self.closed = True
+            logger.warning("Socket send failed: %s", e)
+            raise ConnectionError(str(e)) from e
 
-    def flush(self) -> None:
-        """Send queued bytes until blocked or fully flushed."""
-        while self._send_buffer and not self.closed:
+    def _recv_exactly(self, size: int) -> bytes:
+        chunks: list[bytes] = []
+        received = 0
+        while received < size:
             try:
-                sent = self.sock.send(self._send_buffer)
-            except (BlockingIOError, InterruptedError):
-                break
-            except OSError as exc:
+                chunk = self.sock.recv(size - received)
+            except OSError as e:
                 self.closed = True
-                logger.warning("Socket send failed: %s", exc)
-                raise ConnectionError(str(exc)) from exc
-            if sent <= 0:
-                self.closed = True
-                logger.warning("Socket closed while sending queued data")
-                raise ConnectionError("Socket closed while sending")
-            self._send_buffer = self._send_buffer[sent:]
-
-    def poll_messages(self) -> list[dict]:
-        """Read bytes and return decoded length-prefixed pickled messages."""
-        messages: list[dict] = []
-        while not self.closed:
-            try:
-                chunk = self.sock.recv(self._next_read_size())
-            except (BlockingIOError, InterruptedError):
-                break
-            except OSError as exc:
-                self.closed = True
-                logger.warning("Socket receive failed: %s", exc)
-                raise ConnectionError(str(exc)) from exc
+                logger.warning("Socket receive failed: %s", e)
+                raise ConnectionError(str(e)) from e
             if not chunk:
                 self.closed = True
-                logger.info("Socket closed by remote peer")
-                break
-            self._recv_buffer += chunk
+                raise ConnectionError("Socket closed while receiving data")
+            chunks.append(chunk)
+            received += len(chunk)
+        return b"".join(chunks)
 
+    def _recv_header(self) -> int:
+        header = ""
         while True:
-            sep_idx = self._recv_buffer.find(b"#")
-            if sep_idx < 0:
-                if len(self._recv_buffer) > MAX_HEADER_BYTES:
-                    self.closed = True
-                    raise ConnectionError("Invalid frame header (missing '#')")
+            try:
+                ch = self.sock.recv(1).decode("ascii")
+            except OSError as e:
+                self.closed = True
+                logger.warning("Socket receive failed: %s", e)
+                raise ConnectionError(str(e)) from e
+            if not ch:
+                self.closed = True
+                raise ConnectionError("Socket closed while reading header")
+            if ch == "#":
                 break
-
-            if sep_idx == 0 or sep_idx > MAX_HEADER_BYTES:
+            header += ch
+            if len(header) > MAX_HEADER_BYTES:
                 self.closed = True
                 raise ConnectionError("Invalid frame header length")
 
-            header = self._recv_buffer[:sep_idx]
-            if not header.isdigit():
-                self.closed = True
-                raise ConnectionError("Invalid frame header digits")
+        if not header or not header.isdigit():
+            self.closed = True
+            raise ConnectionError("Invalid frame header digits")
 
-            body_len = int(header)
-            if body_len > MAX_FRAME_BYTES:
-                self.closed = True
-                raise ConnectionError("Frame too large")
-
-            frame_end = sep_idx + 1 + body_len
-            if len(self._recv_buffer) < frame_end:
-                break
-
-            body = self._recv_buffer[sep_idx + 1:frame_end]
-            self._recv_buffer = self._recv_buffer[frame_end:]
-            try:
-                msg = pickle.loads(body)
-            except Exception:
-                logger.warning("Failed to unpickle inbound frame")
-                continue
-            if not isinstance(msg, dict):
-                logger.warning(
-                    "Discarded inbound frame with unsupported payload type: %s",
-                    type(msg).__name__,
-                )
-                continue
-            messages.append(msg)
-        return messages
-
-    def _next_read_size(self) -> int:
-        """Choose a recv size based on current frame parsing progress."""
-        sep_idx = self._recv_buffer.find(b"#")
-        if sep_idx < 0:
-            return 1
-        if sep_idx == 0 or sep_idx > MAX_HEADER_BYTES:
-            return 1
-        header = self._recv_buffer[:sep_idx]
-        if not header.isdigit():
-            return 1
         body_len = int(header)
         if body_len > MAX_FRAME_BYTES:
-            return 1
-        frame_end = sep_idx + 1 + body_len
-        remaining = frame_end - len(self._recv_buffer)
-        return max(1, remaining)
+            self.closed = True
+            raise ConnectionError("Frame too large")
+        return body_len
+
+    def read_message(self) -> dict:
+        """Read one framed pickled dict message."""
+        body_len = self._recv_header()
+        body = self._recv_exactly(body_len)
+        try:
+            msg = pickle.loads(body)
+        except Exception as e:
+            raise ConnectionError(f"Invalid pickled payload: {e}") from e
+        if not isinstance(msg, dict):
+            raise ConnectionError("Unsupported payload type")
+        return msg
+
+    def get_messages(self) -> list[dict]:
+        """Read all immediately available framed messages."""
+        messages: list[dict] = []
+        while not self.closed:
+            readable, _, _ = select.select([self.sock], [], [], 0.0)
+            if not readable:
+                break
+            messages.append(self.read_message())
+        return messages
 
     def close(self) -> None:
         """Close the underlying socket and mark the connection as closed."""

@@ -3,8 +3,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 from pathlib import Path
 import sys
+import warnings
+
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -18,7 +23,11 @@ if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        filename=PROJECT_ROOT / "server.log",
+        filemode="a",
+        force=True,
     )
+    logging.captureWarnings(True)
     parser = argparse.ArgumentParser(
         description="HellCrepe multiplayer game server")
     parser.add_argument("--host", default=SERVER_HOST, help="Host/IP to bind")

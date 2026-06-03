@@ -1,8 +1,12 @@
 import argparse
 import logging
+import os
 from pathlib import Path
 import sys
+import warnings
 
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API")
 import pygame
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -21,7 +25,7 @@ from functions import (
     handle_main_events,
     load_visual_level,
     should_start_lobby_music,
-    poll_network_messages,
+    get_network_messages,
     present_frame,
     render_lobby_scene,
     render_playing_scene,
@@ -134,7 +138,7 @@ def main(host: str, port: int) -> None:
 
     while running:
         dt = clock.tick(FPS) / 1000.0
-        poll_network_messages(connection, net_state)
+        get_network_messages(connection, net_state)
 
         (
             running,
@@ -401,7 +405,11 @@ if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        filename=PROJECT_ROOT / "client.log",
+        filemode="a",
+        force=True,
     )
+    logging.captureWarnings(True)
     parser = argparse.ArgumentParser(
         description="HellCrepe multiplayer client")
     parser.add_argument("--host", default=CLIENT_SERVER_HOST, help="Server host/IP")

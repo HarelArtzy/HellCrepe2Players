@@ -109,11 +109,11 @@ def generate_dungeon_fighter_crepe_name(model: str | None = None) -> str:
                 stream=False,
                 options={"temperature": 1.1},
             )
-        except Exception as exc:
-            if getattr(exc, "status_code", None) == 404:
+        except Exception as e:
+            if getattr(e, "status_code", None) == 404:
                 logger.warning("Ollama model not found: '%s'", candidate)
                 continue
-            if "not found" in str(exc).lower():
+            if "not found" in str(e).lower():
                 logger.warning("Ollama model not found: '%s'", candidate)
                 continue
             logger.exception("Ollama request failed for model '%s'", candidate)

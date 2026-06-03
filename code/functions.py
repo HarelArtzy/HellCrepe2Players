@@ -72,12 +72,12 @@ def apply_network_message(msg: dict, net_state: dict) -> None:
         net_state["error"] = msg.get("message", "Server error.")
 
 
-def poll_network_messages(conn: Protocol, net_state: dict) -> None:
+def get_network_messages(conn: Protocol, net_state: dict) -> None:
     """Drain all pending socket messages and update local network state."""
     try:
-        messages = conn.poll_messages()
+        messages = conn.get_messages()
     except ConnectionError:
-        logger.warning("Network connection dropped while polling messages")
+        logger.warning("Network connection dropped while getting messages")
         net_state["error"] = "Disconnected from server."
         return
 
@@ -639,7 +639,7 @@ def send_client_message(
                 if available_skins
                 else "default"
             )
-            connection.queue_message(
+            connection.send_message(
                 {
                     "type": "lobby",
                     "username": username_to_send,
@@ -670,8 +670,7 @@ def send_client_message(
                 "aim_y": aim_y,
                 "restart": restart_requested,
             }
-            connection.queue_message(input_payload)
-        connection.flush()
+            connection.send_message(input_payload)
     except ConnectionError:
         logger.warning("Disconnected from server while sending client payload")
         net_state["error"] = "Disconnected from server."
