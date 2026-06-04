@@ -1114,7 +1114,11 @@ def render_lobby_scene(
                 64)))
 
     controls_text = lobby_small_font.render(
-        "Type username  |  Left/Right: skin  |  R: AI name  |  Enter: ready", True,
+        (
+            "Type username  |  Left/Right: skin  |  "
+            "R: AI name  |  Enter: ready"
+        ),
+        True,
         (190, 190, 205))
     screen.blit(
         controls_text,

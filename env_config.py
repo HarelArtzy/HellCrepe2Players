@@ -30,4 +30,6 @@ CLIENT_SERVER_HOST = (
 )
 CLIENT_SERVER_PORT = _get_int("CLIENT_SERVER_PORT", SERVER_PORT)
 
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b").strip() or "llama3.1:8b"
+OLLAMA_MODEL = (
+    os.getenv("OLLAMA_MODEL", "llama3.1:8b").strip() or "llama3.1:8b"
+)

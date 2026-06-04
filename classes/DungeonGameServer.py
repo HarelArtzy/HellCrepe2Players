@@ -189,7 +189,7 @@ class DungeonGameServer:
         }
 
     def has_amrany_been_defeated(self) -> bool:
-        """Return True once any loaded Amrany level no longer has Amrany alive."""
+        """Return whether Amrany is gone from any loaded Amrany level."""
         if not self.match_started:
             return False
 
@@ -197,7 +197,10 @@ class DungeonGameServer:
             level = self.levels.get(level_idx)
             if level is None:
                 continue
-            if not any(enemy.enemy_type == "Amrany" for enemy in level.enemies):
+            amrany_alive = any(
+                enemy.enemy_type == "Amrany" for enemy in level.enemies
+            )
+            if not amrany_alive:
                 return True
 
         return any(player.won for player in self.players.values())

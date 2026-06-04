@@ -67,7 +67,12 @@ def _build_model_candidates(requested_model: str | None) -> list[str]:
     local_models = _list_local_models()
 
     candidates: list[str] = []
-    for name in (requested_model or "", env_model, DEFAULT_OLLAMA_MODEL, *local_models):
+    for name in (
+        requested_model or "",
+        env_model,
+        DEFAULT_OLLAMA_MODEL,
+        *local_models,
+    ):
         cleaned = str(name).strip()
         if cleaned and cleaned not in candidates:
             candidates.append(cleaned)
@@ -77,7 +82,9 @@ def _build_model_candidates(requested_model: str | None) -> list[str]:
 def generate_dungeon_fighter_crepe_name(model: str | None = None) -> str:
     """Generate a short crepe fighter name from a local Ollama model."""
     if ollama_chat is None:
-        logger.warning("The 'ollama' package is not installed; using fallback name")
+        logger.warning(
+            "The 'ollama' package is not installed; using fallback name"
+        )
         return FALLBACK_NAME
     chat_fn = cast(Any, ollama_chat)
 
@@ -94,14 +101,16 @@ def generate_dungeon_fighter_crepe_name(model: str | None = None) -> str:
                     {
                         "role": "system",
                         "content": (
-                            "You create short fantasy names for action game characters."
+                            "You create short fantasy names for action game "
+                            "characters."
                         ),
                     },
                     {
                         "role": "user",
                         "content": (
-                            "Return one original name for a dungeon fighter crepe. "
-                            "Output only the name. Max 20 characters. The name should include the word Crepe or "
+                            "Return one original name for a dungeon fighter "
+                            "crepe. Output only the name. Max 20 characters. "
+                            "The name should include the word Crepe or "
                             "something related to it."
                         ),
                     },

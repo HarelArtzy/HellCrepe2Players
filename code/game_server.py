@@ -9,14 +9,17 @@ import sys
 import warnings
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API")
+warnings.filterwarnings(
+    "ignore",
+    message="pkg_resources is deprecated as an API",
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from classes.DungeonGameServer import DungeonGameServer
-from env_config import MAX_PLAYERS, SERVER_HOST, SERVER_PORT
+from classes.DungeonGameServer import DungeonGameServer  # noqa: E402
+from env_config import MAX_PLAYERS, SERVER_HOST, SERVER_PORT  # noqa: E402
 
 
 if __name__ == "__main__":
@@ -31,11 +34,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="HellCrepe multiplayer game server")
     parser.add_argument("--host", default=SERVER_HOST, help="Host/IP to bind")
-    parser.add_argument("--port", type=int, default=SERVER_PORT, help="TCP port")
-    parser.add_argument("--max-players", type=int, default=MAX_PLAYERS, help="Maximum number of players")
+    parser.add_argument(
+        "--port", type=int, default=SERVER_PORT, help="TCP port")
+    parser.add_argument(
+        "--max-players",
+        type=int,
+        default=MAX_PLAYERS,
+        help="Maximum number of players",
+    )
     args = parser.parse_args()
 
-    server = DungeonGameServer(args.host, args.port, max_players=max(1, args.max_players))
+    server = DungeonGameServer(
+        args.host,
+        args.port,
+        max_players=max(1, args.max_players),
+    )
     try:
         asyncio.run(server.run())
     except KeyboardInterrupt:

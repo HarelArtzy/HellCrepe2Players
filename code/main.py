@@ -6,15 +6,18 @@ import sys
 import warnings
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API")
-import pygame
+warnings.filterwarnings(
+    "ignore",
+    message="pkg_resources is deprecated as an API",
+)
+import pygame  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from classes.Player import Player
-from functions import (
+from classes.Player import Player  # noqa: E402
+from functions import (  # noqa: E402
     apply_latest_state,
     build_amrany_levels,
     calc_view,
@@ -34,8 +37,12 @@ from functions import (
     send_client_message,
     update_chest_overlay_progress,
 )
-from env_config import ASSETS_DIR, CLIENT_SERVER_HOST, CLIENT_SERVER_PORT
-from settings import BASE_H, BASE_W, FPS, STARTING_LVL
+from env_config import (  # noqa: E402
+    ASSETS_DIR,
+    CLIENT_SERVER_HOST,
+    CLIENT_SERVER_PORT,
+)
+from settings import BASE_H, BASE_W, FPS, STARTING_LVL  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
@@ -412,7 +419,16 @@ if __name__ == "__main__":
     logging.captureWarnings(True)
     parser = argparse.ArgumentParser(
         description="HellCrepe multiplayer client")
-    parser.add_argument("--host", default=CLIENT_SERVER_HOST, help="Server host/IP")
-    parser.add_argument("--port", type=int, default=CLIENT_SERVER_PORT, help="Server port")
+    parser.add_argument(
+        "--host",
+        default=CLIENT_SERVER_HOST,
+        help="Server host/IP",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=CLIENT_SERVER_PORT,
+        help="Server port",
+    )
     args = parser.parse_args()
     main(args.host, args.port)
